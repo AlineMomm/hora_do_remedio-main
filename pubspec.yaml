@@ -1,0 +1,34 @@
+name: hora_do_remedio
+description: Aplicativo para lembrete de medicamentos
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  
+  # Core
+  shared_preferences: ^2.2.2
+  connectivity_plus: ^5.0.2
+  cupertino_icons: ^1.0.2
+  
+  # Firebase - versões testadas
+  firebase_core: 2.15.1
+  firebase_auth: 4.9.0
+  cloud_firestore: 4.9.1
+  
+  # Secure Storage
+  flutter_secure_storage: ^9.0.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/logo.png
