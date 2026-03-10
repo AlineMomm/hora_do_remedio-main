@@ -21,7 +21,6 @@ class MedicationModel {
     required this.createdAt,
   });
 
-  // Converte para Map (para salvar no SharedPreferences)
   Map<String, dynamic> toMap() {
     return {
       'id': id,
@@ -35,7 +34,6 @@ class MedicationModel {
     };
   }
 
-  // Cria a partir de Map (para ler do SharedPreferences)
   factory MedicationModel.fromMap(Map<String, dynamic> map) {
     return MedicationModel(
       id: map['id'] ?? '',
@@ -51,11 +49,17 @@ class MedicationModel {
     );
   }
 
-  // Métodos auxiliares
+  // NOVO: Método para comparar se é o mesmo medicamento (ignorando ID)
+  bool isSameAs(MedicationModel other) {
+    return name == other.name && 
+           hour == other.hour && 
+           minute == other.minute;
+  }
+
   TimeOfDay get timeOfDay => TimeOfDay(hour: hour, minute: minute);
   
   String get formattedTime {
-    final period = hour >= 12 ? 'Tarde' : 'Manhã';
+    final period = hour >= 12 ? 'PM' : 'AM';
     final hour12 = hour > 12 ? hour - 12 : hour;
     return '${hour12.toString().padLeft(2, '0')}:${minute.toString().padLeft(2, '0')} $period';
   }

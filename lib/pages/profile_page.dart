@@ -8,6 +8,7 @@ import '../services/local_storage_service.dart';
 import '../services/sync_service.dart';
 import '../services/auth_service.dart';
 import '../services/medication_service.dart';
+import '../services/firebase_service.dart';
 import '../models/medication_model.dart';
 import '../models/user_model.dart';
 import 'medication_list_page.dart';
@@ -25,6 +26,7 @@ class _ProfilePageState extends State<ProfilePage> {
   final SyncService _syncService = SyncService();
   final AuthService _authService = AuthService();
   final MedicationService _medicationService = MedicationService();
+  final FirebaseService _firebaseService = FirebaseService();
   final ImagePicker _imagePicker = ImagePicker();
   
   late TextEditingController _nameController;
@@ -40,7 +42,6 @@ class _ProfilePageState extends State<ProfilePage> {
   bool _isLoading = false;
   bool _isCloudUser = false;
   
-  // Para foto de perfil
   Uint8List? _profileImageBytes;
   String? _profileImageBase64;
   bool _isImageLoading = false;
@@ -48,8 +49,13 @@ class _ProfilePageState extends State<ProfilePage> {
   final String _profileId = 'local_profile_001';
   final String _localUserId = 'local_user_001';
   
-  // Dados do usuário da nuvem
   UserModel? _cloudUserData;
+  String? _cloudUserId;
+
+  // Para controlar a formatação
+  bool _isFormatting = false;
+  String _lastPhoneRawValue = '';
+  String _lastEmergencyPhoneRawValue = '';
 
   @override
   void initState() {
@@ -58,26 +64,24 @@ class _ProfilePageState extends State<ProfilePage> {
     _checkCloudStatusAndLoadData();
   }
 
-  // NOVO: Carregar tudo em sequência
   Future<void> _checkCloudStatusAndLoadData() async {
     setState(() {
       _isLoading = true;
     });
 
     try {
-      // Primeiro verifica status da nuvem
       final status = await _syncService.getSyncStatus();
       setState(() {
         _isCloudUser = status['isLoggedIn'] ?? false;
+        _cloudUserId = status['cloudUserId'];
       });
 
-      // Depois carrega dados do usuário da nuvem se estiver logado
-      if (_isCloudUser) {
+      if (_isCloudUser && _cloudUserId != null) {
+        await _loadCloudUserProfile();
+      } else {
         await _loadCloudUserData();
+        await _loadProfile();
       }
-
-      // Por fim carrega o perfil
-      await _loadProfile();
       
     } catch (e) {
       print('❌ Erro ao carregar dados: $e');
@@ -88,7 +92,64 @@ class _ProfilePageState extends State<ProfilePage> {
     }
   }
 
-  // Carregar dados do usuário da nuvem
+  Future<void> _loadCloudUserProfile() async {
+    try {
+      print('🔄 Carregando perfil da nuvem para $_cloudUserId');
+      final cloudProfile = await _firebaseService.getUserProfile(_cloudUserId!);
+      
+      if (cloudProfile != null) {
+        setState(() {
+          _cloudUserData = cloudProfile;
+        });
+        
+        _nameController.text = cloudProfile.name;
+        _emailController.text = cloudProfile.email;
+        
+        if (cloudProfile.phone != null && cloudProfile.phone!.isNotEmpty) {
+          _phoneController.text = _formatPhoneNumber(cloudProfile.phone!);
+        }
+        
+        if (cloudProfile.age != null) {
+          _ageController.text = cloudProfile.age.toString();
+        }
+        
+        if (cloudProfile.bloodType != null) {
+          _bloodTypeController.text = cloudProfile.bloodType!;
+        }
+        
+        if (cloudProfile.emergencyContactName != null) {
+          _emergencyNameController.text = cloudProfile.emergencyContactName!;
+        }
+        
+        if (cloudProfile.emergencyContactPhone != null && cloudProfile.emergencyContactPhone!.isNotEmpty) {
+          _emergencyPhoneController.text = _formatPhoneNumber(cloudProfile.emergencyContactPhone!);
+        }
+        
+        if (cloudProfile.observations != null) {
+          _observationsController.text = cloudProfile.observations!;
+        }
+        
+        if (cloudProfile.profileImageUrl != null) {
+          try {
+            _profileImageBase64 = cloudProfile.profileImageUrl;
+            _profileImageBytes = base64Decode(cloudProfile.profileImageUrl!);
+          } catch (e) {
+            print('⚠️ Erro ao decodificar imagem: $e');
+          }
+        }
+        
+        print('✅ Perfil carregado da nuvem: ${cloudProfile.name}');
+      } else {
+        await _loadCloudUserData();
+        await _loadProfile();
+      }
+    } catch (e) {
+      print('❌ Erro ao carregar perfil da nuvem: $e');
+      await _loadCloudUserData();
+      await _loadProfile();
+    }
+  }
+
   Future<void> _loadCloudUserData() async {
     try {
       final userData = await _authService.getCurrentUser();
@@ -103,40 +164,92 @@ class _ProfilePageState extends State<ProfilePage> {
     }
   }
 
-  // NOVA: Formatação correta de telefone
-  String _formatPhoneNumber(String value) {
+  // FUNÇÃO SIMPLIFICADA: Formata o telefone no padrão (47) 99999-9999
+  String _formatPhoneNumber(String rawNumber) {
     // Remove tudo que não é número
-    final numbers = value.replaceAll(RegExp(r'[^0-9]'), '');
+    final numbers = rawNumber.replaceAll(RegExp(r'[^0-9]'), '');
     
     if (numbers.isEmpty) return '';
     
     StringBuffer formatted = StringBuffer();
     
-    // +55 (47) 99999-9999
-    if (numbers.length >= 2) {
-      formatted.write('+${numbers.substring(0, 2)}'); // +55
-      
-      if (numbers.length >= 4) {
-        formatted.write(' (${numbers.substring(2, 4)})'); // (47)
-        
-        if (numbers.length >= 9) {
-          formatted.write(' ${numbers.substring(4, 9)}-${numbers.substring(9, numbers.length > 13 ? 13 : numbers.length)}'); // 99999-9999
-        } else if (numbers.length > 4) {
-          formatted.write(' ${numbers.substring(4)}'); // 99999
-        }
-      } else if (numbers.length > 2) {
-        formatted.write(' (${numbers.substring(2)}'); // (47 incompleto)
+    for (int i = 0; i < numbers.length; i++) {
+      if (i == 0) {
+        formatted.write('(${numbers[i]}');
+      } else if (i == 1) {
+        formatted.write('${numbers[i]})');
+      } else if (i == 2) {
+        formatted.write(' ${numbers[i]}');
+      } else if (i >= 3 && i <= 6) {
+        formatted.write(numbers[i]);
+      } else if (i == 7) {
+        formatted.write('-${numbers[i]}');
+      } else {
+        formatted.write(numbers[i]);
       }
-    } else {
-      formatted.write('+$numbers');
     }
     
     return formatted.toString();
   }
 
-  // Remover formatação para salvar
+  // Remove a formatação para salvar apenas os números
   String _unformatPhoneNumber(String formatted) {
     return formatted.replaceAll(RegExp(r'[^0-9]'), '');
+  }
+
+  // Listener para o telefone principal - VERSÃO SIMPLIFICADA
+  void _onPhoneChanged() {
+    if (_isFormatting) return;
+    
+    final currentText = _phoneController.text;
+    final rawNumbers = currentText.replaceAll(RegExp(r'[^0-9]'), '');
+    
+    // Se não mudou o valor bruto, não faz nada
+    if (rawNumbers == _lastPhoneRawValue) return;
+    
+    _isFormatting = true;
+    
+    if (rawNumbers.isEmpty) {
+      // Se apagou tudo, limpa o campo
+      _phoneController.clear();
+      _lastPhoneRawValue = '';
+    } else {
+      // Aplica a formatação
+      final formatted = _formatPhoneNumber(rawNumbers);
+      _phoneController.value = TextEditingValue(
+        text: formatted,
+        selection: TextSelection.collapsed(offset: formatted.length),
+      );
+      _lastPhoneRawValue = rawNumbers;
+    }
+    
+    _isFormatting = false;
+  }
+
+  // Listener para o telefone de emergência - VERSÃO SIMPLIFICADA
+  void _onEmergencyPhoneChanged() {
+    if (_isFormatting) return;
+    
+    final currentText = _emergencyPhoneController.text;
+    final rawNumbers = currentText.replaceAll(RegExp(r'[^0-9]'), '');
+    
+    if (rawNumbers == _lastEmergencyPhoneRawValue) return;
+    
+    _isFormatting = true;
+    
+    if (rawNumbers.isEmpty) {
+      _emergencyPhoneController.clear();
+      _lastEmergencyPhoneRawValue = '';
+    } else {
+      final formatted = _formatPhoneNumber(rawNumbers);
+      _emergencyPhoneController.value = TextEditingValue(
+        text: formatted,
+        selection: TextSelection.collapsed(offset: formatted.length),
+      );
+      _lastEmergencyPhoneRawValue = rawNumbers;
+    }
+    
+    _isFormatting = false;
   }
 
   Future<void> _loadProfile() async {
@@ -146,41 +259,57 @@ class _ProfilePageState extends State<ProfilePage> {
       print('📝 Carregando perfil - Nome do perfil: ${profile['name']}');
       print('📝 Carregando perfil - Nome da nuvem: ${_cloudUserData?.name}');
       
-      // PRIORIDADE: Nome da nuvem primeiro, depois perfil local
-      if (_cloudUserData != null && _cloudUserData!.name.isNotEmpty) {
-        _nameController.text = _cloudUserData!.name;
-        print('✅ Usando nome da nuvem: ${_cloudUserData!.name}');
-      } else if (profile['name'] != null && profile['name'].toString().isNotEmpty) {
-        _nameController.text = profile['name'];
-        print('✅ Usando nome local: ${profile['name']}');
+      if (_nameController.text.isEmpty) {
+        if (_cloudUserData != null && _cloudUserData!.name.isNotEmpty) {
+          _nameController.text = _cloudUserData!.name;
+        } else if (profile['name'] != null && profile['name'].toString().isNotEmpty) {
+          _nameController.text = profile['name'];
+        }
       }
       
-      // Email
-      _emailController.text = profile['email'] ?? _cloudUserData?.email ?? '';
-      
-      // Telefone - aplicar formatação
-      final phone = profile['phone'] ?? '';
-      if (phone.isNotEmpty) {
-        _phoneController.text = _formatPhoneNumber(phone);
-        print('📞 Telefone formatado: ${_phoneController.text}');
+      if (_emailController.text.isEmpty) {
+        _emailController.text = profile['email'] ?? _cloudUserData?.email ?? '';
       }
       
-      _ageController.text = profile['age']?.toString() ?? '';
-      _bloodTypeController.text = profile['bloodType'] ?? '';
-      _emergencyNameController.text = profile['emergencyContactName'] ?? '';
-      
-      // Telefone de emergência - aplicar formatação
-      final emergencyPhone = profile['emergencyContactPhone'] ?? '';
-      if (emergencyPhone.isNotEmpty) {
-        _emergencyPhoneController.text = _formatPhoneNumber(emergencyPhone);
+      if (_phoneController.text.isEmpty) {
+        final phone = profile['phone'] ?? '';
+        if (phone.isNotEmpty) {
+          _phoneController.text = _formatPhoneNumber(phone);
+          _lastPhoneRawValue = phone.replaceAll(RegExp(r'[^0-9]'), '');
+        }
       }
       
-      _observationsController.text = profile['observations'] ?? '';
+      if (_ageController.text.isEmpty) {
+        _ageController.text = profile['age']?.toString() ?? '';
+      }
       
-      // Carregar foto de perfil
-      if (profile['profileImage'] != null) {
-        _profileImageBase64 = profile['profileImage'];
-        _profileImageBytes = base64Decode(profile['profileImage']);
+      if (_bloodTypeController.text.isEmpty) {
+        _bloodTypeController.text = profile['bloodType'] ?? '';
+      }
+      
+      if (_emergencyNameController.text.isEmpty) {
+        _emergencyNameController.text = profile['emergencyContactName'] ?? '';
+      }
+      
+      if (_emergencyPhoneController.text.isEmpty) {
+        final emergencyPhone = profile['emergencyContactPhone'] ?? '';
+        if (emergencyPhone.isNotEmpty) {
+          _emergencyPhoneController.text = _formatPhoneNumber(emergencyPhone);
+          _lastEmergencyPhoneRawValue = emergencyPhone.replaceAll(RegExp(r'[^0-9]'), '');
+        }
+      }
+      
+      if (_observationsController.text.isEmpty) {
+        _observationsController.text = profile['observations'] ?? '';
+      }
+      
+      if (_profileImageBytes == null && profile['profileImage'] != null) {
+        try {
+          _profileImageBase64 = profile['profileImage'];
+          _profileImageBytes = base64Decode(profile['profileImage']);
+        } catch (e) {
+          print('⚠️ Erro ao decodificar imagem local: $e');
+        }
       }
       
     } catch (e) {
@@ -206,55 +335,15 @@ class _ProfilePageState extends State<ProfilePage> {
     _emergencyPhoneController = TextEditingController();
     _observationsController = TextEditingController();
     
-    // Listeners para formatação
-    _phoneController.addListener(_formatPhoneOnChange);
-    _emergencyPhoneController.addListener(_formatEmergencyPhoneOnChange);
-  }
-
-  // Formatação automática enquanto digita
-  void _formatPhoneOnChange() {
-    final text = _phoneController.text;
-    final oldSelection = _phoneController.selection;
-    
-    // Só formata se não estiver apagando e tiver números
-    if (text.isNotEmpty && RegExp(r'[0-9]').hasMatch(text)) {
-      final unformatted = _unformatPhoneNumber(text);
-      final formatted = _formatPhoneNumber(unformatted);
-      
-      if (formatted != text) {
-        _phoneController.value = TextEditingValue(
-          text: formatted,
-          selection: TextSelection.collapsed(
-            offset: formatted.length,
-          ),
-        );
-      }
-    }
-  }
-
-  void _formatEmergencyPhoneOnChange() {
-    final text = _emergencyPhoneController.text;
-    
-    if (text.isNotEmpty && RegExp(r'[0-9]').hasMatch(text)) {
-      final unformatted = _unformatPhoneNumber(text);
-      final formatted = _formatPhoneNumber(unformatted);
-      
-      if (formatted != text) {
-        _emergencyPhoneController.value = TextEditingValue(
-          text: formatted,
-          selection: TextSelection.collapsed(
-            offset: formatted.length,
-          ),
-        );
-      }
-    }
+    _phoneController.addListener(_onPhoneChanged);
+    _emergencyPhoneController.addListener(_onEmergencyPhoneChanged);
   }
 
   void _toggleEdit() {
     setState(() {
       _isEditing = !_isEditing;
       if (!_isEditing) {
-        _checkCloudStatusAndLoadData(); // Recarrega tudo ao cancelar
+        _checkCloudStatusAndLoadData();
       }
     });
   }
@@ -352,7 +441,6 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
-  // Salvar perfil
   Future<void> _saveProfile() async {
     if (_formKey.currentState!.validate()) {
       setState(() {
@@ -360,21 +448,43 @@ class _ProfilePageState extends State<ProfilePage> {
       });
 
       try {
-        final profile = {
+        final cleanPhone = _unformatPhoneNumber(_phoneController.text);
+        final cleanEmergencyPhone = _unformatPhoneNumber(_emergencyPhoneController.text);
+        
+        final profileData = {
           'uid': _profileId,
           'name': _nameController.text.trim(),
           'email': _emailController.text.trim(),
-          'phone': _unformatPhoneNumber(_phoneController.text), // Salvar sem formatação
+          'phone': cleanPhone,
           'age': int.tryParse(_ageController.text.trim()),
           'bloodType': _bloodTypeController.text.trim(),
           'emergencyContactName': _emergencyNameController.text.trim(),
-          'emergencyContactPhone': _unformatPhoneNumber(_emergencyPhoneController.text), // Salvar sem formatação
+          'emergencyContactPhone': cleanEmergencyPhone,
           'observations': _observationsController.text.trim(),
           'profileImage': _profileImageBase64,
           'createdAt': DateTime.now().millisecondsSinceEpoch,
         };
 
-        await _storage.saveUser(profile);
+        await _storage.saveUser(profileData);
+        print('✅ Perfil salvo localmente');
+
+        if (_isCloudUser && _cloudUserId != null) {
+          final userModel = UserModel(
+            uid: _cloudUserId!,
+            name: _nameController.text.trim(),
+            email: _emailController.text.trim(),
+            phone: cleanPhone,
+            age: int.tryParse(_ageController.text.trim()),
+            bloodType: _bloodTypeController.text.trim(),
+            emergencyContactName: _emergencyNameController.text.trim(),
+            emergencyContactPhone: cleanEmergencyPhone,
+            observations: _observationsController.text.trim(),
+            profileImageUrl: _profileImageBase64,
+          );
+          
+          await _syncService.updateUserProfileInCloud(userModel);
+          print('✅ Perfil salvo na nuvem');
+        }
 
         if (!mounted) return;
         
@@ -417,25 +527,44 @@ class _ProfilePageState extends State<ProfilePage> {
         print('📦 Salvando ${cloudMeds.length} medicamentos localmente');
         
         final localMeds = await _medicationService.getMedicationsList(_localUserId);
-        for (var med in localMeds) {
-          await _medicationService.deleteMedication(med.id);
+        
+        int adicionados = 0;
+        int ignorados = 0;
+        
+        for (var cloudMed in cloudMeds) {
+          bool existeLocal = false;
+          
+          for (var localMed in localMeds) {
+            if (cloudMed.name == localMed.name && 
+                cloudMed.hour == localMed.hour && 
+                cloudMed.minute == localMed.minute) {
+              existeLocal = true;
+              print('   ⏭️ Já existe localmente: ${cloudMed.name}');
+              break;
+            }
+          }
+          
+          if (!existeLocal) {
+            print('   ✅ Adicionando localmente: ${cloudMed.name}');
+            
+            final localMed = MedicationModel(
+              id: DateTime.now().millisecondsSinceEpoch.toString(),
+              userId: _localUserId,
+              name: cloudMed.name,
+              hour: cloudMed.hour,
+              minute: cloudMed.minute,
+              frequency: cloudMed.frequency,
+              notes: cloudMed.notes,
+              createdAt: cloudMed.createdAt,
+            );
+            await _medicationService.addMedication(localMed);
+            adicionados++;
+          } else {
+            ignorados++;
+          }
         }
         
-        for (var med in cloudMeds) {
-          final localMed = MedicationModel(
-            id: med.id,
-            userId: _localUserId,
-            name: med.name,
-            hour: med.hour,
-            minute: med.minute,
-            frequency: med.frequency,
-            notes: med.notes,
-            createdAt: med.createdAt,
-          );
-          await _medicationService.addMedication(localMed);
-        }
-        
-        print('✅ Medicamentos salvos localmente com sucesso!');
+        print('✅ Medicamentos salvos localmente: $adicionados adicionados, $ignorados ignorados');
       }
     } catch (e) {
       print('❌ Erro ao salvar medicamentos localmente: $e');
@@ -680,7 +809,6 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
-  // Helper para mostrar hint do formato de telefone
   Widget _buildPhoneHint() {
     return Padding(
       padding: const EdgeInsets.only(left: 12, top: 4),
@@ -693,7 +821,7 @@ class _ProfilePageState extends State<ProfilePage> {
           ),
           const SizedBox(width: 4),
           Text(
-            'Formato: +55 (47) 99999-9999',
+            'Digite apenas os números do telefone',
             style: TextStyle(
               fontSize: 12,
               color: Colors.grey[600],
@@ -764,7 +892,6 @@ class _ProfilePageState extends State<ProfilePage> {
                     _buildProfileImage(),
                     const SizedBox(height: 20),
                     
-                    // Informações Pessoais
                     Card(
                       elevation: 2,
                       shape: RoundedRectangleBorder(
@@ -785,14 +912,13 @@ class _ProfilePageState extends State<ProfilePage> {
                             ),
                             const SizedBox(height: 16),
                             
-                            // Nome
                             TextFormField(
                               controller: _nameController,
                               decoration: InputDecoration(
                                 labelText: 'Nome completo',
                                 prefixIcon: const Icon(Icons.person, color: Color(0xFF757575)),
-                                hintText: _cloudUserData != null && _nameController.text.isEmpty 
-                                    ? _cloudUserData!.name 
+                                helperText: _cloudUserData != null 
+                                    ? 'Nome da sua conta na nuvem' 
                                     : null,
                               ),
                               enabled: _isEditing,
@@ -805,7 +931,6 @@ class _ProfilePageState extends State<ProfilePage> {
                             ),
                             const SizedBox(height: 16),
                             
-                            // Email
                             TextFormField(
                               controller: _emailController,
                               decoration: const InputDecoration(
@@ -825,7 +950,6 @@ class _ProfilePageState extends State<ProfilePage> {
                             ),
                             const SizedBox(height: 16),
                             
-                            // Telefone (com formatação)
                             Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
@@ -843,7 +967,6 @@ class _ProfilePageState extends State<ProfilePage> {
                             ),
                             const SizedBox(height: 16),
                             
-                            // Idade
                             TextFormField(
                               controller: _ageController,
                               decoration: const InputDecoration(
@@ -855,7 +978,6 @@ class _ProfilePageState extends State<ProfilePage> {
                             ),
                             const SizedBox(height: 16),
                             
-                            // Tipo Sanguíneo
                             DropdownButtonFormField<String>(
                               value: _bloodTypeController.text.isNotEmpty 
                                   ? _bloodTypeController.text 
@@ -894,7 +1016,6 @@ class _ProfilePageState extends State<ProfilePage> {
                     
                     const SizedBox(height: 20),
                     
-                    // Contato de Emergência
                     Card(
                       elevation: 2,
                       shape: RoundedRectangleBorder(
@@ -915,7 +1036,6 @@ class _ProfilePageState extends State<ProfilePage> {
                             ),
                             const SizedBox(height: 16),
                             
-                            // Nome do Contato
                             TextFormField(
                               controller: _emergencyNameController,
                               decoration: const InputDecoration(
@@ -926,7 +1046,6 @@ class _ProfilePageState extends State<ProfilePage> {
                             ),
                             const SizedBox(height: 16),
                             
-                            // Telefone do Contato (com formatação)
                             Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
@@ -949,7 +1068,6 @@ class _ProfilePageState extends State<ProfilePage> {
                     
                     const SizedBox(height: 20),
                     
-                    // Observações
                     Card(
                       elevation: 2,
                       shape: RoundedRectangleBorder(
@@ -986,7 +1104,6 @@ class _ProfilePageState extends State<ProfilePage> {
                     
                     const SizedBox(height: 30),
                     
-                    // Botão de Sair da Conta
                     if (_isCloudUser) ...[
                       Center(
                         child: Container(
@@ -1046,8 +1163,8 @@ class _ProfilePageState extends State<ProfilePage> {
 
   @override
   void dispose() {
-    _phoneController.removeListener(_formatPhoneOnChange);
-    _emergencyPhoneController.removeListener(_formatEmergencyPhoneOnChange);
+    _phoneController.removeListener(_onPhoneChanged);
+    _emergencyPhoneController.removeListener(_onEmergencyPhoneChanged);
     _nameController.dispose();
     _emailController.dispose();
     _phoneController.dispose();
