@@ -1,9 +1,15 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'dart:typed_data';
+import 'dart:convert';
 import '../services/local_storage_service.dart';
 import '../services/sync_service.dart';
 import '../services/auth_service.dart';
 import '../services/medication_service.dart';
 import '../models/medication_model.dart';
+import '../models/user_model.dart';
 import 'medication_list_page.dart';
 
 class ProfilePage extends StatefulWidget {
@@ -19,6 +25,7 @@ class _ProfilePageState extends State<ProfilePage> {
   final SyncService _syncService = SyncService();
   final AuthService _authService = AuthService();
   final MedicationService _medicationService = MedicationService();
+  final ImagePicker _imagePicker = ImagePicker();
   
   late TextEditingController _nameController;
   late TextEditingController _emailController;
@@ -33,47 +40,151 @@ class _ProfilePageState extends State<ProfilePage> {
   bool _isLoading = false;
   bool _isCloudUser = false;
   
+  // Para foto de perfil
+  Uint8List? _profileImageBytes;
+  String? _profileImageBase64;
+  bool _isImageLoading = false;
+  
   final String _profileId = 'local_profile_001';
   final String _localUserId = 'local_user_001';
+  
+  // Dados do usuário da nuvem
+  UserModel? _cloudUserData;
 
   @override
   void initState() {
     super.initState();
     _initializeControllers();
-    _loadProfile();
-    _checkCloudStatus();
+    _checkCloudStatusAndLoadData();
   }
 
-  Future<void> _checkCloudStatus() async {
-    final status = await _syncService.getSyncStatus();
-    setState(() {
-      _isCloudUser = status['isLoggedIn'] ?? false;
-    });
-  }
-
-  Future<void> _loadProfile() async {
+  // NOVO: Carregar tudo em sequência
+  Future<void> _checkCloudStatusAndLoadData() async {
     setState(() {
       _isLoading = true;
     });
 
     try {
-      final profile = await _getProfile();
-      
-      _nameController.text = profile['name'] ?? '';
-      _emailController.text = profile['email'] ?? '';
-      _phoneController.text = profile['phone'] ?? '';
-      _ageController.text = profile['age']?.toString() ?? '';
-      _bloodTypeController.text = profile['bloodType'] ?? '';
-      _emergencyNameController.text = profile['emergencyContactName'] ?? '';
-      _emergencyPhoneController.text = profile['emergencyContactPhone'] ?? '';
-      _observationsController.text = profile['observations'] ?? '';
+      // Primeiro verifica status da nuvem
+      final status = await _syncService.getSyncStatus();
+      setState(() {
+        _isCloudUser = status['isLoggedIn'] ?? false;
+      });
+
+      // Depois carrega dados do usuário da nuvem se estiver logado
+      if (_isCloudUser) {
+        await _loadCloudUserData();
+      }
+
+      // Por fim carrega o perfil
+      await _loadProfile();
       
     } catch (e) {
-      print('❌ Erro ao carregar perfil: $e');
+      print('❌ Erro ao carregar dados: $e');
     } finally {
       setState(() {
         _isLoading = false;
       });
+    }
+  }
+
+  // Carregar dados do usuário da nuvem
+  Future<void> _loadCloudUserData() async {
+    try {
+      final userData = await _authService.getCurrentUser();
+      if (userData != null) {
+        setState(() {
+          _cloudUserData = userData;
+        });
+        print('✅ Dados da nuvem carregados: ${userData.name}');
+      }
+    } catch (e) {
+      print('❌ Erro ao carregar dados da nuvem: $e');
+    }
+  }
+
+  // NOVA: Formatação correta de telefone
+  String _formatPhoneNumber(String value) {
+    // Remove tudo que não é número
+    final numbers = value.replaceAll(RegExp(r'[^0-9]'), '');
+    
+    if (numbers.isEmpty) return '';
+    
+    StringBuffer formatted = StringBuffer();
+    
+    // +55 (47) 99999-9999
+    if (numbers.length >= 2) {
+      formatted.write('+${numbers.substring(0, 2)}'); // +55
+      
+      if (numbers.length >= 4) {
+        formatted.write(' (${numbers.substring(2, 4)})'); // (47)
+        
+        if (numbers.length >= 9) {
+          formatted.write(' ${numbers.substring(4, 9)}-${numbers.substring(9, numbers.length > 13 ? 13 : numbers.length)}'); // 99999-9999
+        } else if (numbers.length > 4) {
+          formatted.write(' ${numbers.substring(4)}'); // 99999
+        }
+      } else if (numbers.length > 2) {
+        formatted.write(' (${numbers.substring(2)}'); // (47 incompleto)
+      }
+    } else {
+      formatted.write('+$numbers');
+    }
+    
+    return formatted.toString();
+  }
+
+  // Remover formatação para salvar
+  String _unformatPhoneNumber(String formatted) {
+    return formatted.replaceAll(RegExp(r'[^0-9]'), '');
+  }
+
+  Future<void> _loadProfile() async {
+    try {
+      final profile = await _getProfile();
+      
+      print('📝 Carregando perfil - Nome do perfil: ${profile['name']}');
+      print('📝 Carregando perfil - Nome da nuvem: ${_cloudUserData?.name}');
+      
+      // PRIORIDADE: Nome da nuvem primeiro, depois perfil local
+      if (_cloudUserData != null && _cloudUserData!.name.isNotEmpty) {
+        _nameController.text = _cloudUserData!.name;
+        print('✅ Usando nome da nuvem: ${_cloudUserData!.name}');
+      } else if (profile['name'] != null && profile['name'].toString().isNotEmpty) {
+        _nameController.text = profile['name'];
+        print('✅ Usando nome local: ${profile['name']}');
+      }
+      
+      // Email
+      _emailController.text = profile['email'] ?? _cloudUserData?.email ?? '';
+      
+      // Telefone - aplicar formatação
+      final phone = profile['phone'] ?? '';
+      if (phone.isNotEmpty) {
+        _phoneController.text = _formatPhoneNumber(phone);
+        print('📞 Telefone formatado: ${_phoneController.text}');
+      }
+      
+      _ageController.text = profile['age']?.toString() ?? '';
+      _bloodTypeController.text = profile['bloodType'] ?? '';
+      _emergencyNameController.text = profile['emergencyContactName'] ?? '';
+      
+      // Telefone de emergência - aplicar formatação
+      final emergencyPhone = profile['emergencyContactPhone'] ?? '';
+      if (emergencyPhone.isNotEmpty) {
+        _emergencyPhoneController.text = _formatPhoneNumber(emergencyPhone);
+      }
+      
+      _observationsController.text = profile['observations'] ?? '';
+      
+      // Carregar foto de perfil
+      if (profile['profileImage'] != null) {
+        _profileImageBase64 = profile['profileImage'];
+        _profileImageBytes = base64Decode(profile['profileImage']);
+      }
+      
+    } catch (e) {
+      print('❌ Erro ao carregar perfil: $e');
     }
   }
 
@@ -94,17 +205,154 @@ class _ProfilePageState extends State<ProfilePage> {
     _emergencyNameController = TextEditingController();
     _emergencyPhoneController = TextEditingController();
     _observationsController = TextEditingController();
+    
+    // Listeners para formatação
+    _phoneController.addListener(_formatPhoneOnChange);
+    _emergencyPhoneController.addListener(_formatEmergencyPhoneOnChange);
+  }
+
+  // Formatação automática enquanto digita
+  void _formatPhoneOnChange() {
+    final text = _phoneController.text;
+    final oldSelection = _phoneController.selection;
+    
+    // Só formata se não estiver apagando e tiver números
+    if (text.isNotEmpty && RegExp(r'[0-9]').hasMatch(text)) {
+      final unformatted = _unformatPhoneNumber(text);
+      final formatted = _formatPhoneNumber(unformatted);
+      
+      if (formatted != text) {
+        _phoneController.value = TextEditingValue(
+          text: formatted,
+          selection: TextSelection.collapsed(
+            offset: formatted.length,
+          ),
+        );
+      }
+    }
+  }
+
+  void _formatEmergencyPhoneOnChange() {
+    final text = _emergencyPhoneController.text;
+    
+    if (text.isNotEmpty && RegExp(r'[0-9]').hasMatch(text)) {
+      final unformatted = _unformatPhoneNumber(text);
+      final formatted = _formatPhoneNumber(unformatted);
+      
+      if (formatted != text) {
+        _emergencyPhoneController.value = TextEditingValue(
+          text: formatted,
+          selection: TextSelection.collapsed(
+            offset: formatted.length,
+          ),
+        );
+      }
+    }
   }
 
   void _toggleEdit() {
     setState(() {
       _isEditing = !_isEditing;
       if (!_isEditing) {
-        _loadProfile();
+        _checkCloudStatusAndLoadData(); // Recarrega tudo ao cancelar
       }
     });
   }
 
+  Future<void> _pickImage(ImageSource source) async {
+    setState(() {
+      _isImageLoading = true;
+    });
+
+    try {
+      final XFile? pickedFile = await _imagePicker.pickImage(
+        source: source,
+        maxWidth: 500,
+        maxHeight: 500,
+        imageQuality: 80,
+      );
+
+      if (pickedFile != null) {
+        Uint8List imageBytes;
+        
+        if (kIsWeb) {
+          imageBytes = await pickedFile.readAsBytes();
+        } else {
+          File imageFile = File(pickedFile.path);
+          imageBytes = await imageFile.readAsBytes();
+        }
+        
+        setState(() {
+          _profileImageBytes = imageBytes;
+          _profileImageBase64 = base64Encode(imageBytes);
+        });
+        
+        print('✅ Foto selecionada com sucesso!');
+      }
+    } catch (e) {
+      print('❌ Erro ao selecionar imagem: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Erro ao selecionar imagem: $e'),
+          backgroundColor: const Color(0xFFD32F2F),
+        ),
+      );
+    } finally {
+      setState(() {
+        _isImageLoading = false;
+      });
+    }
+  }
+
+  void _removeImage() {
+    setState(() {
+      _profileImageBytes = null;
+      _profileImageBase64 = null;
+    });
+  }
+
+  void _confirmRemoveImage() {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text(
+            'Remover Foto',
+            style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+          ),
+          content: const Text(
+            'Tem certeza que deseja remover sua foto de perfil?',
+            style: TextStyle(fontSize: 16),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text(
+                'NÃO',
+                style: TextStyle(fontSize: 16, color: Color(0xFF1976D2)),
+              ),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.pop(context);
+                _removeImage();
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFD32F2F),
+                foregroundColor: Colors.white,
+              ),
+              child: const Text(
+                'SIM, REMOVER',
+                style: TextStyle(fontSize: 16),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  // Salvar perfil
   Future<void> _saveProfile() async {
     if (_formKey.currentState!.validate()) {
       setState(() {
@@ -116,12 +364,13 @@ class _ProfilePageState extends State<ProfilePage> {
           'uid': _profileId,
           'name': _nameController.text.trim(),
           'email': _emailController.text.trim(),
-          'phone': _phoneController.text.trim(),
+          'phone': _unformatPhoneNumber(_phoneController.text), // Salvar sem formatação
           'age': int.tryParse(_ageController.text.trim()),
           'bloodType': _bloodTypeController.text.trim(),
           'emergencyContactName': _emergencyNameController.text.trim(),
-          'emergencyContactPhone': _emergencyPhoneController.text.trim(),
+          'emergencyContactPhone': _unformatPhoneNumber(_emergencyPhoneController.text), // Salvar sem formatação
           'observations': _observationsController.text.trim(),
+          'profileImage': _profileImageBase64,
           'createdAt': DateTime.now().millisecondsSinceEpoch,
         };
 
@@ -155,7 +404,6 @@ class _ProfilePageState extends State<ProfilePage> {
     }
   }
 
-  // NOVO: Salvar medicamentos da nuvem localmente antes do logout
   Future<void> _saveCloudMedsLocally() async {
     try {
       final status = await _syncService.getSyncStatus();
@@ -163,23 +411,20 @@ class _ProfilePageState extends State<ProfilePage> {
 
       print('🔄 Salvando medicamentos da nuvem para uso local...');
       
-      // Carregar medicamentos da nuvem
       final cloudMeds = await _syncService.loadFromCloud(status['cloudUserId']);
       
       if (cloudMeds.isNotEmpty) {
         print('📦 Salvando ${cloudMeds.length} medicamentos localmente');
         
-        // Primeiro, limpar medicamentos locais antigos
         final localMeds = await _medicationService.getMedicationsList(_localUserId);
         for (var med in localMeds) {
           await _medicationService.deleteMedication(med.id);
         }
         
-        // Salvar medicamentos da nuvem com o ID local
         for (var med in cloudMeds) {
           final localMed = MedicationModel(
-            id: med.id, // Manter o mesmo ID
-            userId: _localUserId, // Trocar para o ID local
+            id: med.id,
+            userId: _localUserId,
             name: med.name,
             hour: med.hour,
             minute: med.minute,
@@ -198,7 +443,6 @@ class _ProfilePageState extends State<ProfilePage> {
     }
   }
 
-  // MODIFICADO: Função para mostrar diálogo de confirmação de saída
   Future<void> _confirmLogout() async {
     return showDialog(
       context: context,
@@ -242,25 +486,18 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
-  // MODIFICADO: Função para fazer logout (agora salva local primeiro)
   Future<void> _logout() async {
     setState(() {
       _isLoading = true;
     });
 
     try {
-      // PRIMEIRO: Salvar medicamentos da nuvem localmente
       await _saveCloudMedsLocally();
-      
-      // DEPOIS: Fazer logout do Firebase
       await _syncService.logoutFromCloud();
-      
-      // Limpar estado de autenticação local
       await _authService.signOut();
       
       if (!mounted) return;
 
-      // Mostrar mensagem de sucesso
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Você saiu da sua conta com sucesso!\nSeus medicamentos foram salvos no celular.'),
@@ -269,7 +506,6 @@ class _ProfilePageState extends State<ProfilePage> {
         ),
       );
 
-      // Voltar para a tela principal (agora com os medicamentos salvos localmente)
       Navigator.pushAndRemoveUntil(
         context,
         MaterialPageRoute(builder: (context) => const MedicationListPage()),
@@ -294,44 +530,149 @@ class _ProfilePageState extends State<ProfilePage> {
   Widget _buildProfileImage() {
     return Stack(
       children: [
-        CircleAvatar(
-          radius: 50,
-          backgroundColor: const Color(0xFF1976D2),
-          child: const Icon(
-            Icons.person,
-            size: 50,
-            color: Colors.white,
+        Container(
+          width: 120,
+          height: 120,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            border: Border.all(
+              color: const Color(0xFF1976D2),
+              width: 3,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.grey.withOpacity(0.3),
+                spreadRadius: 2,
+                blurRadius: 5,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          child: CircleAvatar(
+            radius: 60,
+            backgroundColor: const Color(0xFFE3F2FD),
+            backgroundImage: _profileImageBytes != null
+                ? MemoryImage(_profileImageBytes!)
+                : null,
+            child: _profileImageBytes == null
+                ? const Icon(
+                    Icons.person,
+                    size: 60,
+                    color: Color(0xFF1976D2),
+                  )
+                : null,
           ),
         ),
+        
+        if (_isImageLoading)
+          Positioned.fill(
+            child: Container(
+              decoration: const BoxDecoration(
+                shape: BoxShape.circle,
+                color: Colors.black26,
+              ),
+              child: const Center(
+                child: CircularProgressIndicator(
+                  valueColor: AlwaysStoppedAnimation(Colors.white),
+                ),
+              ),
+            ),
+          ),
+        
         if (_isEditing)
           Positioned(
             bottom: 0,
             right: 0,
             child: Container(
-              decoration: const BoxDecoration(
-                color: Color(0xFF388E3C),
+              decoration: BoxDecoration(
+                color: _profileImageBytes == null
+                    ? const Color(0xFF388E3C)
+                    : const Color(0xFFF57C00),
                 shape: BoxShape.circle,
+                border: Border.all(
+                  color: Colors.white,
+                  width: 2,
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.grey.withOpacity(0.3),
+                    spreadRadius: 1,
+                    blurRadius: 3,
+                    offset: const Offset(0, 1),
+                  ),
+                ],
               ),
-              child: IconButton(
-                icon: const Icon(Icons.camera_alt, color: Colors.white, size: 20),
-                onPressed: _changeProfileImage,
+              child: PopupMenuButton<String>(
+                icon: Icon(
+                  _profileImageBytes == null ? Icons.add_a_photo : Icons.edit,
+                  color: Colors.white,
+                  size: 20,
+                ),
+                offset: const Offset(0, 40),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                onSelected: (String value) {
+                  if (value == 'camera') {
+                    _pickImage(ImageSource.camera);
+                  } else if (value == 'gallery') {
+                    _pickImage(ImageSource.gallery);
+                  } else if (value == 'remove') {
+                    _confirmRemoveImage();
+                  }
+                },
+                itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
+                  const PopupMenuItem<String>(
+                    value: 'camera',
+                    child: Row(
+                      children: [
+                        Icon(Icons.camera_alt, color: Color(0xFF1976D2)),
+                        SizedBox(width: 8),
+                        Text('Tirar foto'),
+                      ],
+                    ),
+                  ),
+                  const PopupMenuItem<String>(
+                    value: 'gallery',
+                    child: Row(
+                      children: [
+                        Icon(Icons.photo_library, color: Color(0xFF1976D2)),
+                        SizedBox(width: 8),
+                        Text('Escolher da galeria'),
+                      ],
+                    ),
+                  ),
+                  if (_profileImageBytes != null)
+                    const PopupMenuItem<String>(
+                      value: 'remove',
+                      child: Row(
+                        children: [
+                          Icon(Icons.delete, color: Color(0xFFD32F2F)),
+                          SizedBox(width: 8),
+                          Text('Remover foto'),
+                        ],
+                      ),
+                    ),
+                ],
               ),
             ),
           ),
+        
         if (_isCloudUser)
           Positioned(
             top: 0,
             right: 0,
             child: Container(
-              padding: const EdgeInsets.all(4),
+              padding: const EdgeInsets.all(6),
               decoration: const BoxDecoration(
                 color: Color(0xFF4CAF50),
                 shape: BoxShape.circle,
+                border: Border.fromBorderSide(BorderSide(color: Colors.white, width: 2)),
               ),
               child: const Icon(
                 Icons.cloud_done,
                 color: Colors.white,
-                size: 16,
+                size: 14,
               ),
             ),
           ),
@@ -339,16 +680,25 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
-  void _changeProfileImage() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Alterar Foto'),
-        content: const Text('Funcionalidade de câmera/galeria será implementada.'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('OK'),
+  // Helper para mostrar hint do formato de telefone
+  Widget _buildPhoneHint() {
+    return Padding(
+      padding: const EdgeInsets.only(left: 12, top: 4),
+      child: Row(
+        children: [
+          Icon(
+            Icons.info_outline,
+            size: 14,
+            color: Colors.grey[600],
+          ),
+          const SizedBox(width: 4),
+          Text(
+            'Formato: +55 (47) 99999-9999',
+            style: TextStyle(
+              fontSize: 12,
+              color: Colors.grey[600],
+              fontStyle: FontStyle.italic,
+            ),
           ),
         ],
       ),
@@ -435,11 +785,15 @@ class _ProfilePageState extends State<ProfilePage> {
                             ),
                             const SizedBox(height: 16),
                             
+                            // Nome
                             TextFormField(
                               controller: _nameController,
-                              decoration: const InputDecoration(
+                              decoration: InputDecoration(
                                 labelText: 'Nome completo',
-                                prefixIcon: Icon(Icons.person, color: Color(0xFF757575)),
+                                prefixIcon: const Icon(Icons.person, color: Color(0xFF757575)),
+                                hintText: _cloudUserData != null && _nameController.text.isEmpty 
+                                    ? _cloudUserData!.name 
+                                    : null,
                               ),
                               enabled: _isEditing,
                               validator: (value) {
@@ -451,6 +805,7 @@ class _ProfilePageState extends State<ProfilePage> {
                             ),
                             const SizedBox(height: 16),
                             
+                            // Email
                             TextFormField(
                               controller: _emailController,
                               decoration: const InputDecoration(
@@ -470,17 +825,25 @@ class _ProfilePageState extends State<ProfilePage> {
                             ),
                             const SizedBox(height: 16),
                             
-                            TextFormField(
-                              controller: _phoneController,
-                              decoration: const InputDecoration(
-                                labelText: 'Telefone',
-                                prefixIcon: Icon(Icons.phone, color: Color(0xFF757575)),
-                              ),
-                              enabled: _isEditing,
-                              keyboardType: TextInputType.phone,
+                            // Telefone (com formatação)
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                TextFormField(
+                                  controller: _phoneController,
+                                  decoration: const InputDecoration(
+                                    labelText: 'Telefone',
+                                    prefixIcon: Icon(Icons.phone, color: Color(0xFF757575)),
+                                  ),
+                                  enabled: _isEditing,
+                                  keyboardType: TextInputType.phone,
+                                ),
+                                _buildPhoneHint(),
+                              ],
                             ),
                             const SizedBox(height: 16),
                             
+                            // Idade
                             TextFormField(
                               controller: _ageController,
                               decoration: const InputDecoration(
@@ -492,13 +855,37 @@ class _ProfilePageState extends State<ProfilePage> {
                             ),
                             const SizedBox(height: 16),
                             
-                            TextFormField(
-                              controller: _bloodTypeController,
+                            // Tipo Sanguíneo
+                            DropdownButtonFormField<String>(
+                              value: _bloodTypeController.text.isNotEmpty 
+                                  ? _bloodTypeController.text 
+                                  : null,
                               decoration: const InputDecoration(
                                 labelText: 'Tipo Sanguíneo',
                                 prefixIcon: Icon(Icons.bloodtype, color: Color(0xFF757575)),
                               ),
-                              enabled: _isEditing,
+                              items: const [
+                                DropdownMenuItem(value: 'A+', child: Text('A+')),
+                                DropdownMenuItem(value: 'A-', child: Text('A-')),
+                                DropdownMenuItem(value: 'B+', child: Text('B+')),
+                                DropdownMenuItem(value: 'B-', child: Text('B-')),
+                                DropdownMenuItem(value: 'AB+', child: Text('AB+')),
+                                DropdownMenuItem(value: 'AB-', child: Text('AB-')),
+                                DropdownMenuItem(value: 'O+', child: Text('O+')),
+                                DropdownMenuItem(value: 'O-', child: Text('O-')),
+                                DropdownMenuItem(value: 'Não sei', child: Text('Não sei')),
+                              ],
+                              onChanged: _isEditing ? (value) {
+                                setState(() {
+                                  _bloodTypeController.text = value ?? '';
+                                });
+                              } : null,
+                              validator: (value) {
+                                if (_isEditing && (value == null || value.isEmpty)) {
+                                  return 'Por favor, selecione seu tipo sanguíneo';
+                                }
+                                return null;
+                              },
                             ),
                           ],
                         ),
@@ -528,6 +915,7 @@ class _ProfilePageState extends State<ProfilePage> {
                             ),
                             const SizedBox(height: 16),
                             
+                            // Nome do Contato
                             TextFormField(
                               controller: _emergencyNameController,
                               decoration: const InputDecoration(
@@ -538,14 +926,21 @@ class _ProfilePageState extends State<ProfilePage> {
                             ),
                             const SizedBox(height: 16),
                             
-                            TextFormField(
-                              controller: _emergencyPhoneController,
-                              decoration: const InputDecoration(
-                                labelText: 'Telefone do contato',
-                                prefixIcon: Icon(Icons.phone, color: Color(0xFF757575)),
-                              ),
-                              enabled: _isEditing,
-                              keyboardType: TextInputType.phone,
+                            // Telefone do Contato (com formatação)
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                TextFormField(
+                                  controller: _emergencyPhoneController,
+                                  decoration: const InputDecoration(
+                                    labelText: 'Telefone do contato',
+                                    prefixIcon: Icon(Icons.phone, color: Color(0xFF757575)),
+                                  ),
+                                  enabled: _isEditing,
+                                  keyboardType: TextInputType.phone,
+                                ),
+                                _buildPhoneHint(),
+                              ],
                             ),
                           ],
                         ),
@@ -591,43 +986,44 @@ class _ProfilePageState extends State<ProfilePage> {
                     
                     const SizedBox(height: 30),
                     
-                    // Botão de Sair da Conta (só aparece se estiver logado na nuvem)
+                    // Botão de Sair da Conta
                     if (_isCloudUser) ...[
-                      Container(
-                        width: 280, // Largura fixa menor
-                        height: 48, // Altura reduzida
-                        margin: const EdgeInsets.symmetric(vertical: 16),
-                        child: ElevatedButton(
-                          onPressed: _confirmLogout,
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFFD32F2F),
-                            foregroundColor: Colors.white,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(30), // Mais arredondado
-                            ),
-                            elevation: 2, // Menos sombra
-                            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-                          ),
-                          child: const Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            mainAxisSize: MainAxisSize.min, // Para não expandir
-                            children: [
-                              Icon(Icons.exit_to_app, size: 20), // Ícone menor
-                              SizedBox(width: 8), // Espaço menor
-                              Text(
-                                'SAIR DA CONTA',
-                                style: TextStyle(
-                                  fontSize: 16, // Fonte menor
-                                  fontWeight: FontWeight.bold,
-                                  letterSpacing: 0.5, // Leve espaçamento
-                                ),
+                      Center(
+                        child: Container(
+                          width: 280,
+                          height: 48,
+                          margin: const EdgeInsets.symmetric(vertical: 16),
+                          child: ElevatedButton(
+                            onPressed: _confirmLogout,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFFD32F2F),
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(30),
                               ),
-                            ],
+                              elevation: 2,
+                              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                            ),
+                            child: const Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.exit_to_app, size: 20),
+                                SizedBox(width: 8),
+                                Text(
+                                  'SAIR DA CONTA',
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.bold,
+                                    letterSpacing: 0.5,
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
                         ),
                       ),
-
-                      // Texto explicativo com padding ajustado
+                      
                       const Padding(
                         padding: EdgeInsets.only(top: 4, bottom: 16),
                         child: Text(
@@ -635,7 +1031,7 @@ class _ProfilePageState extends State<ProfilePage> {
                           'Quando você entrar novamente, eles serão sincronizados.',
                           textAlign: TextAlign.center,
                           style: TextStyle(
-                            fontSize: 13, // Fonte um pouco menor
+                            fontSize: 13,
                             color: Color(0xFF757575),
                           ),
                         ),
@@ -650,6 +1046,8 @@ class _ProfilePageState extends State<ProfilePage> {
 
   @override
   void dispose() {
+    _phoneController.removeListener(_formatPhoneOnChange);
+    _emergencyPhoneController.removeListener(_formatEmergencyPhoneOnChange);
     _nameController.dispose();
     _emailController.dispose();
     _phoneController.dispose();

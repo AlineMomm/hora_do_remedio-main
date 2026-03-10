@@ -23,6 +23,11 @@ dependencies:
   # Secure Storage
   flutter_secure_storage: ^9.0.0
 
+  #Foto perfil
+  image_picker: ^1.0.4
+  image_picker_web: ^4.0.0
+  image_picker_for_web: ^3.0.4
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
