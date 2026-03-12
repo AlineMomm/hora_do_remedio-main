@@ -5,8 +5,9 @@ import 'firebase_service.dart';
 import 'medication_service.dart';
 import '../models/medication_model.dart';
 import '../models/user_model.dart';
+import 'package:flutter/material.dart';
 
-class SyncService {
+class SyncService extends ChangeNotifier {
   static final SyncService _instance = SyncService._internal();
   factory SyncService() => _instance;
   
@@ -240,35 +241,32 @@ Future<void> _mergeCloudWithLocal(String cloudUserId) async {
 }
 
   Future<bool> loginToCloud(String email, String password) async {
-  try {
-    final user = await _firebaseService.signInWithEmailAndPassword(email, password);
-    if (user != null) {
-      final oldLocalUserId = await getLocalUserId();
-      
-      print('🔑 Login: oldLocal=$oldLocalUserId, newCloud=${user.uid}');
-      
-      await setCloudUserId(user.uid);
-      await setSyncEnabled(true);
-      
-      // PRIMEIRO: Carregar medicamentos da nuvem para local
-      // Isso garante que temos os dados mais recentes
-      await _mergeCloudWithLocal(user.uid);
-      
-      // DEPOIS: Migrar dados locais para a nuvem (se houver)
-      if (oldLocalUserId != null && oldLocalUserId != user.uid) {
-        await _migrateLocalMedicationsToCloud(user.uid);
+    try {
+      final user = await _firebaseService.signInWithEmailAndPassword(email, password);
+      if (user != null) {
+        final oldLocalUserId = await getLocalUserId();
+        
+        print('🔑 Login: oldLocal=$oldLocalUserId, newCloud=${user.uid}');
+        
+        await setCloudUserId(user.uid);
+        await setSyncEnabled(true);
+        
+        await _mergeCloudWithLocal(user.uid);
+        
+        if (oldLocalUserId != null && oldLocalUserId != user.uid) {
+          await _migrateLocalMedicationsToCloud(user.uid);
+        }
+        
+        notifyListeners(); // Notificar ouvintes
+        return true;
       }
-      
-      return true;
+      return false;
+    } catch (e) {
+      print('❌ Erro no login cloud: $e');
+      rethrow;
     }
-    return false;
-  } catch (e) {
-    print('❌ Erro no login cloud: $e');
-    rethrow;
   }
-}
 
-  // MODIFICADO: Registro na nuvem com migração
   Future<bool> registerInCloud(String name, String email, String password) async {
     try {
       final user = await _firebaseService.registerWithEmailAndPassword(name, email, password);
@@ -280,11 +278,11 @@ Future<void> _mergeCloudWithLocal(String cloudUserId) async {
         await setCloudUserId(user.uid);
         await setSyncEnabled(true);
         
-        // Migrar dados locais para a nova conta
         if (oldLocalUserId != null) {
           await _migrateLocalMedicationsToCloud(user.uid);
         }
         
+        notifyListeners(); // Notificar ouvintes
         return true;
       }
       return false;
@@ -298,6 +296,7 @@ Future<void> _mergeCloudWithLocal(String cloudUserId) async {
     await _firebaseService.signOut();
     await setCloudUserId(null);
     await setSyncEnabled(false);
+    notifyListeners(); // Notificar ouvintes
   }
 
   Future<void> syncLocalToCloud(String userId) async {
@@ -325,6 +324,7 @@ Future<void> _mergeCloudWithLocal(String cloudUserId) async {
   }
 
   try {
+    print('📥 Carregando medicamentos da nuvem para $userId');
     final cloudMeds = await _firebaseService.loadMedicationsFromCloud(userId);
     
     // Ordenar medicamentos da nuvem
@@ -335,8 +335,14 @@ Future<void> _mergeCloudWithLocal(String cloudUserId) async {
       return a.name.compareTo(b.name);
     });
     
+    print('📦 Encontrados ${sortedCloudMeds.length} medicamentos na nuvem');
+    
+    // Carregar medicamentos locais atuais
     final localMeds = await _medicationService.getMedicationsList(userId);
     
+    int adicionados = 0;
+    
+    // Adicionar medicamentos da nuvem que não existem localmente
     for (var cloudMed in sortedCloudMeds) {
       bool existeLocal = false;
       
@@ -348,11 +354,17 @@ Future<void> _mergeCloudWithLocal(String cloudUserId) async {
       }
       
       if (!existeLocal) {
+        print('   ✅ Adicionando localmente: ${cloudMed.name}');
         await _medicationService.addMedication(cloudMed);
+        adicionados++;
       }
     }
     
-    return sortedCloudMeds;
+    print('✅ LoadFromCloud concluído: $adicionados novos medicamentos adicionados');
+    
+    // Retornar a lista completa
+    return await _medicationService.getMedicationsList(userId);
+    
   } catch (e) {
     print('❌ Erro ao carregar da nuvem: $e');
     rethrow;

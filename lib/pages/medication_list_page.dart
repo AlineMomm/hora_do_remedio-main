@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import '../services/medication_service.dart';
 import '../models/medication_model.dart';
 import 'add_medication_page.dart';
@@ -6,6 +7,8 @@ import 'help_page.dart';
 import 'profile_page.dart';
 import '../widgets/sync_button.dart';
 import '../services/sync_service.dart';
+import 'settings_page.dart';
+import '../services/settings_service.dart';
 
 class MedicationListPage extends StatefulWidget {
   const MedicationListPage({super.key});
@@ -19,18 +22,35 @@ class _MedicationListPageState extends State<MedicationListPage> {
   List<MedicationModel> _medications = [];
   bool _isLoading = true;
   
-  final SyncService _syncService = SyncService();
-  String _currentUserId = 'local_user_001'; // ID padrão para usuário não logado
+  final SyncService _syncService = SyncService(); // Já existe
+  String _currentUserId = 'local_user_001';
 
   @override
   void initState() {
     super.initState();
+    _syncService.addListener(_onSyncChange); // Adicionar listener
     _initializeUserAndLoad();
   }
 
-  // NOVO: Inicializar e salvar o ID do usuário local
+  @override
+  void dispose() {
+    _syncService.removeListener(_onSyncChange); // Remover listener
+    super.dispose();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _checkUserAndLoad();
+  }
+
+void _onSyncChange() {
+    // Quando o status de sincronização mudar (login/logout), recarregar
+    print('🔄 SyncService mudou, recarregando medicamentos...');
+    _checkUserAndLoad();
+  }
+  
   Future<void> _initializeUserAndLoad() async {
-    // Salvar o ID do usuário local se ainda não existir
     final existingLocalId = await _syncService.getLocalUserId();
     if (existingLocalId == null) {
       await _syncService.setLocalUserId(_currentUserId);
@@ -56,49 +76,64 @@ class _MedicationListPageState extends State<MedicationListPage> {
   
   if (status['isLoggedIn']) {
     _currentUserId = status['cloudUserId'];
+    print('✅ Usuário logado na nuvem: $_currentUserId');
     
     try {
+      // Carregar medicamentos da nuvem
       final cloudMeds = await _syncService.loadFromCloud(_currentUserId);
-      cloudMeds.sort((a, b) {
+      
+      // Garantir que estamos usando a lista mais atualizada
+      final updatedMeds = await _medicationService.getMedicationsList(_currentUserId);
+      
+      // Ordenar medicamentos
+      updatedMeds.sort((a, b) {
         if (a.hour != b.hour) return a.hour.compareTo(b.hour);
         if (a.minute != b.minute) return a.minute.compareTo(b.minute);
         return a.name.compareTo(b.name);
       });
       
       setState(() {
-        _medications = cloudMeds;
+        _medications = updatedMeds;
         _isLoading = false;
       });
+      
+      print('📦 Medicamentos carregados da nuvem: ${updatedMeds.length}');
+      for (var i = 0; i < updatedMeds.length; i++) {
+        print('   ${i+1}. ${updatedMeds[i].name} - ${updatedMeds[i].formattedTime}');
+      }
+      
     } catch (e) {
+      print('❌ Erro ao carregar da nuvem: $e');
+      // Se falhar, tenta carregar local
       await _loadMedications();
     }
   } else {
+    print('📌 Usuário não logado, carregando medicamentos locais');
     await _loadMedications();
   }
 }
-
   Future<void> _loadMedications() async {
-  try {
-    final userId = await _getEffectiveUserId();
-    final medications = await _medicationService.getMedicationsList(userId);
-    
-    setState(() {
-      _medications = medications;
-      _isLoading = false;
-    });
-    
-    print('📦 Medicamentos carregados para $userId: ${medications.length}');
-    
-    for (var i = 0; i < medications.length; i++) {
-      print('   ${i+1}. ${medications[i].name} - ${medications[i].formattedTime}');
+    try {
+      final userId = await _getEffectiveUserId();
+      final medications = await _medicationService.getMedicationsList(userId);
+      
+      setState(() {
+        _medications = medications;
+        _isLoading = false;
+      });
+      
+      print('📦 Medicamentos carregados para $userId: ${medications.length}');
+      
+      for (var i = 0; i < medications.length; i++) {
+        print('   ${i+1}. ${medications[i].name} - ${medications[i].formattedTime}');
+      }
+    } catch (e) {
+      print('❌ Erro ao carregar medicamentos: $e');
+      setState(() {
+        _isLoading = false;
+      });
     }
-  } catch (e) {
-    print('❌ Erro ao carregar medicamentos: $e');
-    setState(() {
-      _isLoading = false;
-    });
   }
-}
 
   void _confirmDeleteMedication(MedicationModel medication) {
     showDialog(
@@ -171,10 +206,29 @@ class _MedicationListPageState extends State<MedicationListPage> {
     });
   }
 
+  Future<void> _navigateToAddMedication() async {
+  final userId = await _getEffectiveUserId();
+  if (!mounted) return;
+  
+  final result = await Navigator.push(
+    context,
+    MaterialPageRoute(
+      builder: (context) => AddMedicationPage(
+        localUserId: userId,
+      ),
+    ),
+  );
+  
+  // Recarregar medicamentos após voltar da tela de adição
+  await _checkUserAndLoad();
+}
+
   @override
   Widget build(BuildContext context) {
+    final settings = Provider.of<SettingsService>(context);
+    
     return Scaffold(
-      backgroundColor: const Color(0xFFFFFFFF),
+      backgroundColor: Colors.white,
       appBar: AppBar(
         leading: Container(
           margin: const EdgeInsets.all(6),
@@ -196,30 +250,42 @@ class _MedicationListPageState extends State<MedicationListPage> {
             },
           ),
         ),
-        title: const Column(
+        title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
               'Hora do Remédio',
-              style: TextStyle(
-                fontSize: 18,
+              style: settings.getTextStyle(
+                size: 18,
                 fontWeight: FontWeight.bold,
+                color: Colors.white,
               ),
             ),
             Text(
               'Cuide da sua saúde',
-              style: TextStyle(
-                fontSize: 12,
+              style: settings.getTextStyle(
+                size: 12,
                 fontWeight: FontWeight.normal,
+                color: Colors.white,
               ),
             ),
           ],
         ),
-        backgroundColor: const Color(0xFF1976D2),
+        backgroundColor: const Color(0xFF1565C0),
         foregroundColor: Colors.white,
+        elevation: 2,
         actions: [
-          SyncButton(
-            onSyncComplete: _loadMedications,
+          IconButton(
+            icon: const Icon(Icons.settings),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const SettingsPage()),
+              ).then((_) {
+                setState(() {});
+              });
+            },
+            tooltip: 'Configurações',
           ),
           IconButton(
             icon: const Icon(Icons.help_outline),
@@ -249,7 +315,7 @@ class _MedicationListPageState extends State<MedicationListPage> {
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   CircularProgressIndicator(
-                    valueColor: AlwaysStoppedAnimation(Color(0xFF1976D2)),
+                    valueColor: AlwaysStoppedAnimation(Color(0xFF1565C0)),
                   ),
                   SizedBox(height: 16),
                   Text(
@@ -280,84 +346,88 @@ class _MedicationListPageState extends State<MedicationListPage> {
                         },
                       ),
                       const SizedBox(height: 20),
-                      const Text(
+                      Text(
                         'Nenhum medicamento cadastrado',
-                        style: TextStyle(
-                          fontSize: 20,
+                        style: settings.getTextStyle(
+                          size: 20,
                           fontWeight: FontWeight.bold,
-                          color: Color(0xFF212121),
+                          color: const Color(0xFF212121),
                         ),
                       ),
                       const SizedBox(height: 8),
-                      const Text(
-                        'Toque no botão + para adicionar seu primeiro medicamento',
+                      Text(
+                        'Toque no botão abaixo para adicionar seu primeiro medicamento',
                         textAlign: TextAlign.center,
-                        style: TextStyle(color: Colors.grey),
+                        style: settings.getTextStyle(
+                          size: 14,
+                          color: Colors.grey[600],
+                        ),
                       ),
-                      const SizedBox(height: 20),
-                      ElevatedButton(
-                        onPressed: () async {
-                          final userId = await _getEffectiveUserId();
-                          if (!mounted) return;
-                          
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (context) => AddMedicationPage(
-                                localUserId: userId,
-                              ),
-                            ),
-                          ).then((_) async {
-                            await _loadMedications();
-                            
-                            final status = await _syncService.getSyncStatus();
-                            if (status['isLoggedIn']) {
-                              await _syncService.syncLocalToCloud(status['cloudUserId']);
-                            }
-                          });
-                        },
-                        child: const Text('Adicionar Primeiro Medicamento'),
-                      ),
+                      const SizedBox(height: 30),
+                      _buildAddButton(settings),
                     ],
                   ),
                 )
-              : ListView.builder(
-                  padding: const EdgeInsets.all(16),
-                  itemCount: _medications.length,
-                  itemBuilder: (context, index) {
-                    final medication = _medications[index];
-                    return _buildMedicationCard(medication);
-                  },
+              : Column(
+                  children: [
+                    Expanded(
+                      child: ListView.builder(
+                        padding: const EdgeInsets.all(16),
+                        itemCount: _medications.length,
+                        itemBuilder: (context, index) {
+                          final medication = _medications[index];
+                          return _buildMedicationCard(medication, settings);
+                        },
+                      ),
+                    ),
+                    _buildAddButton(settings),
+                  ],
                 ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: () async {
-          final userId = await _getEffectiveUserId();
-          if (!mounted) return;
-          
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => AddMedicationPage(
-                localUserId: userId,
+    );
+  }
+
+  // NOVO: Botão de adicionar medicamento
+  Widget _buildAddButton(SettingsService settings) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.grey.withOpacity(0.3),
+            spreadRadius: 1,
+            blurRadius: 5,
+            offset: const Offset(0, -2),
+          ),
+        ],
+      ),
+      child: ElevatedButton(
+        onPressed: _navigateToAddMedication,
+        style: settings.getElevatedButtonStyle(
+          backgroundColor: const Color(0xFF2E7D32), // Verde escuro
+          foregroundColor: Colors.white,
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.add, size: 24),
+            const SizedBox(width: 8),
+            Text(
+              'ADICIONAR MEDICAMENTO',
+              style: settings.getTextStyle(
+                size: settings.buttonFontSize,
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
               ),
             ),
-          ).then((_) async {
-            await _loadMedications();
-            
-            final status = await _syncService.getSyncStatus();
-            if (status['isLoggedIn']) {
-              await _syncService.syncLocalToCloud(status['cloudUserId']);
-            }
-          });
-        },
-        backgroundColor: const Color(0xFF388E3C),
-        foregroundColor: Colors.white,
-        child: const Icon(Icons.add),
+          ],
+        ),
       ),
     );
   }
 
-  Widget _buildMedicationCard(MedicationModel medication) {
+  Widget _buildMedicationCard(MedicationModel medication, SettingsService settings) {
     return Card(
       margin: const EdgeInsets.only(bottom: 16),
       elevation: 2,
@@ -375,10 +445,10 @@ class _MedicationListPageState extends State<MedicationListPage> {
                 Expanded(
                   child: Text(
                     medication.name,
-                    style: const TextStyle(
-                      fontSize: 18,
+                    style: settings.getTextStyle(
+                      size: 18,
                       fontWeight: FontWeight.bold,
-                      color: Color(0xFF212121),
+                      color: const Color(0xFF212121),
                     ),
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -410,8 +480,8 @@ class _MedicationListPageState extends State<MedicationListPage> {
                 const SizedBox(width: 4),
                 Text(
                   'Horário: ${medication.formattedTime}',
-                  style: TextStyle(
-                    fontSize: 14,
+                  style: settings.getTextStyle(
+                    size: 14,
                     color: Colors.grey[600],
                   ),
                 ),
@@ -424,8 +494,8 @@ class _MedicationListPageState extends State<MedicationListPage> {
                 const SizedBox(width: 4),
                 Text(
                   'Frequência: ${medication.frequency}',
-                  style: TextStyle(
-                    fontSize: 14,
+                  style: settings.getTextStyle(
+                    size: 14,
                     color: Colors.grey[600],
                   ),
                 ),
@@ -435,8 +505,8 @@ class _MedicationListPageState extends State<MedicationListPage> {
               const SizedBox(height: 8),
               Text(
                 'Observações: ${medication.notes}',
-                style: TextStyle(
-                  fontSize: 14,
+                style: settings.getTextStyle(
+                  size: 14,
                   color: Colors.grey[700],
                   fontStyle: FontStyle.italic,
                 ),

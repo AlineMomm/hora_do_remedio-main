@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:provider/provider.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'dart:typed_data';
 import 'dart:convert';
@@ -9,9 +10,11 @@ import '../services/sync_service.dart';
 import '../services/auth_service.dart';
 import '../services/medication_service.dart';
 import '../services/firebase_service.dart';
+import '../services/settings_service.dart';
 import '../models/medication_model.dart';
 import '../models/user_model.dart';
 import 'medication_list_page.dart';
+import 'cloud_login_page.dart';
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({super.key});
@@ -64,86 +67,87 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   Future<void> _checkCloudStatusAndLoadData() async {
+  setState(() {
+    _isLoading = true;
+  });
+
+  try {
+    final status = await _syncService.getSyncStatus();
     setState(() {
-      _isLoading = true;
+      _isCloudUser = status['isLoggedIn'] ?? false;
+      _cloudUserId = status['cloudUserId'];
     });
 
-    try {
-      final status = await _syncService.getSyncStatus();
-      setState(() {
-        _isCloudUser = status['isLoggedIn'] ?? false;
-        _cloudUserId = status['cloudUserId'];
-      });
-
-      // Carregar dados
-      await _loadUserData();
-      
-    } catch (e) {
-      print('❌ Erro ao carregar dados: $e');
-    } finally {
-      setState(() {
-        _isLoading = false;
-      });
+    if (_isCloudUser && _cloudUserId != null) {
+      await _loadCloudUserProfile();
+    } else {
+      await _loadCloudUserData();
+      await _loadLocalProfile();
     }
+    
+  } catch (e) {
+    print('❌ Erro ao carregar dados: $e');
+  } finally {
+    setState(() {
+      _isLoading = false;
+    });
   }
+}
 
-  // NOVO: Carregar dados unificados (nuvem + local)
-  Future<void> _loadUserData() async {
+  Future<void> _loadCloudUserProfile() async {
     try {
-      // Primeiro, tentar carregar da nuvem se estiver logado
-      if (_isCloudUser && _cloudUserId != null) {
-        final cloudProfile = await _firebaseService.getUserProfile(_cloudUserId!);
-        if (cloudProfile != null) {
+      print('🔄 Carregando perfil da nuvem para $_cloudUserId');
+      final cloudProfile = await _firebaseService.getUserProfile(_cloudUserId!);
+      
+      if (cloudProfile != null) {
+        setState(() {
           _cloudUserData = cloudProfile;
-          
-          // Preencher com dados da nuvem
-          _nameController.text = cloudProfile.name;
-          _emailController.text = cloudProfile.email;
-          
-          if (cloudProfile.phone != null && cloudProfile.phone!.isNotEmpty) {
-            _phoneController.text = _formatPhoneNumber(cloudProfile.phone!);
-            _lastPhoneRawValue = cloudProfile.phone!;
-          }
-          
-          if (cloudProfile.age != null) {
-            _ageController.text = cloudProfile.age.toString();
-          }
-          
-          if (cloudProfile.bloodType != null) {
-            _bloodTypeController.text = cloudProfile.bloodType!;
-          }
-          
-          if (cloudProfile.emergencyContactName != null) {
-            _emergencyNameController.text = cloudProfile.emergencyContactName!;
-          }
-          
-          if (cloudProfile.emergencyContactPhone != null && cloudProfile.emergencyContactPhone!.isNotEmpty) {
-            _emergencyPhoneController.text = _formatPhoneNumber(cloudProfile.emergencyContactPhone!);
-            _lastEmergencyPhoneRawValue = cloudProfile.emergencyContactPhone!;
-          }
-          
-          if (cloudProfile.observations != null) {
-            _observationsController.text = cloudProfile.observations!;
-          }
-          
-          if (cloudProfile.profileImageUrl != null) {
-            try {
-              _profileImageBase64 = cloudProfile.profileImageUrl;
-              _profileImageBytes = base64Decode(cloudProfile.profileImageUrl!);
-            } catch (e) {
-              print('⚠️ Erro ao decodificar imagem: $e');
-            }
-          }
-          
-          print('✅ Perfil carregado da nuvem: ${cloudProfile.name}');
-          
-          // Salvar uma cópia local para fallback
-          await _saveLocalProfileCopy();
-          return;
+        });
+        
+        _nameController.text = cloudProfile.name;
+        _emailController.text = cloudProfile.email;
+        
+        if (cloudProfile.phone != null && cloudProfile.phone!.isNotEmpty) {
+          _phoneController.text = _formatPhoneNumber(cloudProfile.phone!);
+          _lastPhoneRawValue = cloudProfile.phone!;
         }
+        
+        if (cloudProfile.age != null) {
+          _ageController.text = cloudProfile.age.toString();
+        }
+        
+        if (cloudProfile.bloodType != null) {
+          _bloodTypeController.text = cloudProfile.bloodType!;
+        }
+        
+        if (cloudProfile.emergencyContactName != null) {
+          _emergencyNameController.text = cloudProfile.emergencyContactName!;
+        }
+        
+        if (cloudProfile.emergencyContactPhone != null && cloudProfile.emergencyContactPhone!.isNotEmpty) {
+          _emergencyPhoneController.text = _formatPhoneNumber(cloudProfile.emergencyContactPhone!);
+          _lastEmergencyPhoneRawValue = cloudProfile.emergencyContactPhone!;
+        }
+        
+        if (cloudProfile.observations != null) {
+          _observationsController.text = cloudProfile.observations!;
+        }
+        
+        if (cloudProfile.profileImageUrl != null) {
+          try {
+            _profileImageBase64 = cloudProfile.profileImageUrl;
+            _profileImageBytes = base64Decode(cloudProfile.profileImageUrl!);
+          } catch (e) {
+            print('⚠️ Erro ao decodificar imagem: $e');
+          }
+        }
+        
+        print('✅ Perfil carregado da nuvem: ${cloudProfile.name}');
+        
+        await _saveLocalProfileCopy();
+        return;
       }
       
-      // Se não conseguiu carregar da nuvem, carregar do local
       await _loadLocalProfile();
       
     } catch (e) {
@@ -152,7 +156,6 @@ class _ProfilePageState extends State<ProfilePage> {
     }
   }
 
-  // NOVO: Carregar perfil local
   Future<void> _loadLocalProfile() async {
     try {
       final profile = await _getProfile();
@@ -196,7 +199,6 @@ class _ProfilePageState extends State<ProfilePage> {
     }
   }
 
-  // NOVO: Salvar cópia local do perfil da nuvem
   Future<void> _saveLocalProfileCopy() async {
     try {
       final profileData = {
@@ -217,6 +219,20 @@ class _ProfilePageState extends State<ProfilePage> {
       print('✅ Cópia local do perfil salva');
     } catch (e) {
       print('⚠️ Erro ao salvar cópia local: $e');
+    }
+  }
+
+  Future<void> _loadCloudUserData() async {
+    try {
+      final userData = await _authService.getCurrentUser();
+      if (userData != null) {
+        setState(() {
+          _cloudUserData = userData;
+        });
+        print('✅ Dados da nuvem carregados: ${userData.name}');
+      }
+    } catch (e) {
+      print('❌ Erro ao carregar dados da nuvem: $e');
     }
   }
 
@@ -423,7 +439,22 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
-  // MODIFICADO: Salvar perfil em ambos os lugares
+  Future<void> _navigateToCloudLogin() async {
+  final result = await Navigator.push(
+    context,
+    MaterialPageRoute(
+      builder: (context) => CloudLoginPage(
+        onLoginSuccess: () {
+          // Após login bem-sucedido, recarregar dados
+          _checkCloudStatusAndLoadData();
+        },
+      ),
+    ),
+  );
+
+  _checkCloudStatusAndLoadData();
+}
+
   Future<void> _saveProfile() async {
     if (_formKey.currentState!.validate()) {
       setState(() {
@@ -434,7 +465,6 @@ class _ProfilePageState extends State<ProfilePage> {
         final cleanPhone = _unformatPhoneNumber(_phoneController.text);
         final cleanEmergencyPhone = _unformatPhoneNumber(_emergencyPhoneController.text);
         
-        // 1. SALVAR LOCALMENTE (sempre)
         final profileData = {
           'uid': _profileId,
           'name': _nameController.text.trim(),
@@ -452,7 +482,6 @@ class _ProfilePageState extends State<ProfilePage> {
         await _storage.saveUser(profileData);
         print('✅ Perfil salvo localmente');
 
-        // 2. SALVAR NA NUVEM (se estiver logado)
         if (_isCloudUser && _cloudUserId != null) {
           final userModel = UserModel(
             uid: _cloudUserId!,
@@ -470,7 +499,6 @@ class _ProfilePageState extends State<ProfilePage> {
           await _syncService.updateUserProfileInCloud(userModel);
           print('✅ Perfil salvo na nuvem');
           
-          // Atualizar dados locais do usuário da nuvem
           setState(() {
             _cloudUserData = userModel;
           });
@@ -611,10 +639,8 @@ class _ProfilePageState extends State<ProfilePage> {
     });
 
     try {
-      // Antes de sair, garantir que temos uma cópia local atualizada
-      await _saveLocalProfileCopy();
       await _saveCloudMedsLocally();
-      
+      await _saveLocalProfileCopy();
       await _syncService.logoutFromCloud();
       await _authService.signOut();
       
@@ -650,28 +676,31 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   Widget _buildProfileImage() {
+    final settings = Provider.of<SettingsService>(context);
+    
     return Stack(
       children: [
+        // Foto de perfil com borda mais escura
         Container(
-          width: 120,
-          height: 120,
+          width: 130,
+          height: 130,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             border: Border.all(
-              color: const Color(0xFF1976D2),
+              color: const Color(0xFF0D47A1), // Azul mais escuro
               width: 3,
             ),
             boxShadow: [
               BoxShadow(
-                color: Colors.grey.withOpacity(0.3),
-                spreadRadius: 2,
-                blurRadius: 5,
-                offset: const Offset(0, 2),
+                color: Colors.grey.withOpacity(0.4),
+                spreadRadius: 3,
+                blurRadius: 8,
+                offset: const Offset(0, 3),
               ),
             ],
           ),
           child: CircleAvatar(
-            radius: 60,
+            radius: 65,
             backgroundColor: const Color(0xFFE3F2FD),
             backgroundImage: _profileImageBytes != null
                 ? MemoryImage(_profileImageBytes!)
@@ -679,8 +708,8 @@ class _ProfilePageState extends State<ProfilePage> {
             child: _profileImageBytes == null
                 ? const Icon(
                     Icons.person,
-                    size: 60,
-                    color: Color(0xFF1976D2),
+                    size: 70,
+                    color: Color(0xFF0D47A1), // Azul mais escuro
                   )
                 : null,
           ),
@@ -708,19 +737,19 @@ class _ProfilePageState extends State<ProfilePage> {
             child: Container(
               decoration: BoxDecoration(
                 color: _profileImageBytes == null
-                    ? const Color(0xFF388E3C)
-                    : const Color(0xFFF57C00),
+                    ? const Color(0xFF2E7D32) // Verde mais escuro
+                    : const Color(0xFFBF360C), // Laranja mais escuro
                 shape: BoxShape.circle,
                 border: Border.all(
                   color: Colors.white,
-                  width: 2,
+                  width: 3,
                 ),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.grey.withOpacity(0.3),
-                    spreadRadius: 1,
-                    blurRadius: 3,
-                    offset: const Offset(0, 1),
+                    color: Colors.grey.withOpacity(0.4),
+                    spreadRadius: 2,
+                    blurRadius: 5,
+                    offset: const Offset(0, 2),
                   ),
                 ],
               ),
@@ -728,9 +757,9 @@ class _ProfilePageState extends State<ProfilePage> {
                 icon: Icon(
                   _profileImageBytes == null ? Icons.add_a_photo : Icons.edit,
                   color: Colors.white,
-                  size: 20,
+                  size: 22,
                 ),
-                offset: const Offset(0, 40),
+                offset: const Offset(0, 45),
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(8),
                 ),
@@ -782,19 +811,27 @@ class _ProfilePageState extends State<ProfilePage> {
         
         if (_isCloudUser)
           Positioned(
-            top: 0,
-            right: 0,
+            top: 5,
+            right: 5,
             child: Container(
               padding: const EdgeInsets.all(6),
               decoration: const BoxDecoration(
-                color: Color(0xFF4CAF50),
+                color: Color(0xFF2E7D32), // Verde mais escuro
                 shape: BoxShape.circle,
-                border: Border.fromBorderSide(BorderSide(color: Colors.white, width: 2)),
+                border: Border.fromBorderSide(BorderSide(color: Colors.white, width: 2.5)),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black26,
+                    spreadRadius: 1,
+                    blurRadius: 3,
+                    offset: Offset(0, 2),
+                  ),
+                ],
               ),
               child: const Icon(
                 Icons.cloud_done,
                 color: Colors.white,
-                size: 14,
+                size: 16,
               ),
             ),
           ),
@@ -802,22 +839,56 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
+  Widget _buildInfoRow(String label, String value, {bool isBold = false}) {
+    final settings = Provider.of<SettingsService>(context, listen: false);
+    
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 150,
+            child: Text(
+              label,
+              style: settings.getTextStyle(
+                fontWeight: FontWeight.w600,
+                color: const Color(0xFF424242), // Cinza escuro
+              ),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style: settings.getTextStyle(
+                fontWeight: isBold ? FontWeight.bold : FontWeight.normal,
+                color: isBold ? Colors.black : const Color(0xFF212121),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildPhoneHint() {
+    final settings = Provider.of<SettingsService>(context);
+    
     return Padding(
       padding: const EdgeInsets.only(left: 12, top: 4),
       child: Row(
         children: [
           Icon(
             Icons.info_outline,
-            size: 14,
-            color: Colors.grey[600],
+            size: 16,
+            color: const Color(0xFF616161), // Cinza mais escuro
           ),
           const SizedBox(width: 4),
           Text(
             'Digite apenas os números do telefone',
-            style: TextStyle(
-              fontSize: 12,
-              color: Colors.grey[600],
+            style: settings.getTextStyle(
+              size: 13,
+              color: const Color(0xFF616161), // Cinza mais escuro
               fontStyle: FontStyle.italic,
             ),
           ),
@@ -828,17 +899,29 @@ class _ProfilePageState extends State<ProfilePage> {
 
   @override
   Widget build(BuildContext context) {
+    final settings = Provider.of<SettingsService>(context);
+    
     return Scaffold(
       backgroundColor: Colors.white,
       appBar: AppBar(
-        title: const Text('Meu Perfil'),
-        backgroundColor: const Color(0xFF1976D2),
+        title: Text(
+          'Meu Perfil',
+          style: settings.getTextStyle(
+            size: 22,
+            fontWeight: FontWeight.bold,
+            color: Colors.white,
+          ),
+        ),
+        backgroundColor: const Color(0xFF1565C0), // Azul mais escuro
         foregroundColor: Colors.white,
+        elevation: 2,
+        centerTitle: true,
         actions: [
           IconButton(
             icon: Icon(_isEditing ? Icons.close : Icons.edit),
             onPressed: _toggleEdit,
             tooltip: _isEditing ? 'Cancelar' : 'Editar',
+            color: Colors.white,
           ),
           if (_isEditing)
             IconButton(
@@ -854,6 +937,7 @@ class _ProfilePageState extends State<ProfilePage> {
                   : const Icon(Icons.save),
               onPressed: _isLoading ? null : _saveProfile,
               tooltip: 'Salvar',
+              color: Colors.white,
             ),
         ],
       ),
@@ -863,7 +947,7 @@ class _ProfilePageState extends State<ProfilePage> {
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   CircularProgressIndicator(
-                    valueColor: AlwaysStoppedAnimation(Color(0xFF1976D2)),
+                    valueColor: AlwaysStoppedAnimation(Color(0xFF1565C0)),
                   ),
                   SizedBox(height: 16),
                   Text(
@@ -882,16 +966,18 @@ class _ProfilePageState extends State<ProfilePage> {
                 key: _formKey,
                 child: Column(
                   children: [
+                    // Foto de Perfil
                     _buildProfileImage(),
-                    const SizedBox(height: 20),
+                    const SizedBox(height: 25),
                     
+                    // Informações Pessoais
                     Card(
-                      elevation: 2,
+                      elevation: 3,
                       shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
+                        borderRadius: BorderRadius.circular(16),
                       ),
                       child: Padding(
-                        padding: const EdgeInsets.all(16),
+                        padding: const EdgeInsets.all(20),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
@@ -900,108 +986,143 @@ class _ProfilePageState extends State<ProfilePage> {
                               style: TextStyle(
                                 fontSize: 20,
                                 fontWeight: FontWeight.bold,
-                                color: Color(0xFF212121),
+                                color: Color(0xFF0D47A1), // Azul escuro
                               ),
                             ),
+                            const SizedBox(height: 8),
+                            const Divider(color: Color(0xFFBDBDBD), thickness: 1),
                             const SizedBox(height: 16),
                             
-                            TextFormField(
-                              controller: _nameController,
-                              decoration: InputDecoration(
-                                labelText: 'Nome completo',
-                                prefixIcon: const Icon(Icons.person, color: Color(0xFF757575)),
-                                helperText: _isCloudUser 
-                                    ? 'Sincronizado com a nuvem' 
-                                    : 'Salvo apenas no celular',
-                              ),
-                              enabled: _isEditing,
-                              validator: (value) {
-                                if (_isEditing && (value == null || value.isEmpty)) {
-                                  return 'Por favor, digite seu nome';
-                                }
-                                return null;
-                              },
-                            ),
-                            const SizedBox(height: 16),
-                            
-                            TextFormField(
-                              controller: _emailController,
-                              decoration: const InputDecoration(
-                                labelText: 'E-mail',
-                                prefixIcon: Icon(Icons.email, color: Color(0xFF757575)),
-                              ),
-                              enabled: _isEditing,
-                              keyboardType: TextInputType.emailAddress,
-                              validator: (value) {
-                                if (_isEditing && value != null && value.isNotEmpty) {
-                                  if (!value.contains('@') || !value.contains('.')) {
-                                    return 'Digite um e-mail válido';
-                                  }
-                                }
-                                return null;
-                              },
-                            ),
-                            const SizedBox(height: 16),
-                            
-                            Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                TextFormField(
-                                  controller: _phoneController,
-                                  decoration: const InputDecoration(
-                                    labelText: 'Telefone',
-                                    prefixIcon: Icon(Icons.phone, color: Color(0xFF757575)),
+                            if (_isEditing) ...[
+                              // Modo edição
+                              TextFormField(
+                                controller: _nameController,
+                                decoration: const InputDecoration(
+                                  labelText: 'Nome completo',
+                                  labelStyle: TextStyle(color: Color(0xFF424242)),
+                                  prefixIcon: Icon(Icons.person, color: Color(0xFF616161)),
+                                  border: OutlineInputBorder(),
+                                  focusedBorder: OutlineInputBorder(
+                                    borderSide: BorderSide(color: Color(0xFF0D47A1), width: 2),
                                   ),
-                                  enabled: _isEditing,
-                                  keyboardType: TextInputType.phone,
                                 ),
-                                _buildPhoneHint(),
-                              ],
-                            ),
-                            const SizedBox(height: 16),
-                            
-                            TextFormField(
-                              controller: _ageController,
-                              decoration: const InputDecoration(
-                                labelText: 'Idade',
-                                prefixIcon: Icon(Icons.cake, color: Color(0xFF757575)),
+                                enabled: _isEditing,
+                                validator: (value) {
+                                  if (_isEditing && (value == null || value.isEmpty)) {
+                                    return 'Por favor, digite seu nome';
+                                  }
+                                  return null;
+                                },
                               ),
-                              enabled: _isEditing,
-                              keyboardType: TextInputType.number,
-                            ),
-                            const SizedBox(height: 16),
-                            
-                            DropdownButtonFormField<String>(
-                              value: _bloodTypeController.text.isNotEmpty 
-                                  ? _bloodTypeController.text 
-                                  : null,
-                              decoration: const InputDecoration(
-                                labelText: 'Tipo Sanguíneo',
-                                prefixIcon: Icon(Icons.bloodtype, color: Color(0xFF757575)),
+                              const SizedBox(height: 16),
+                              
+                              TextFormField(
+                                controller: _emailController,
+                                decoration: const InputDecoration(
+                                  labelText: 'E-mail',
+                                  labelStyle: TextStyle(color: Color(0xFF424242)),
+                                  prefixIcon: Icon(Icons.email, color: Color(0xFF616161)),
+                                  border: OutlineInputBorder(),
+                                  focusedBorder: OutlineInputBorder(
+                                    borderSide: BorderSide(color: Color(0xFF0D47A1), width: 2),
+                                  ),
+                                ),
+                                enabled: _isEditing,
+                                keyboardType: TextInputType.emailAddress,
+                                validator: (value) {
+                                  if (_isEditing && value != null && value.isNotEmpty) {
+                                    if (!value.contains('@') || !value.contains('.')) {
+                                      return 'Digite um e-mail válido';
+                                    }
+                                  }
+                                  return null;
+                                },
                               ),
-                              items: const [
-                                DropdownMenuItem(value: 'A+', child: Text('A+')),
-                                DropdownMenuItem(value: 'A-', child: Text('A-')),
-                                DropdownMenuItem(value: 'B+', child: Text('B+')),
-                                DropdownMenuItem(value: 'B-', child: Text('B-')),
-                                DropdownMenuItem(value: 'AB+', child: Text('AB+')),
-                                DropdownMenuItem(value: 'AB-', child: Text('AB-')),
-                                DropdownMenuItem(value: 'O+', child: Text('O+')),
-                                DropdownMenuItem(value: 'O-', child: Text('O-')),
-                                DropdownMenuItem(value: 'Não sei', child: Text('Não sei')),
-                              ],
-                              onChanged: _isEditing ? (value) {
-                                setState(() {
-                                  _bloodTypeController.text = value ?? '';
-                                });
-                              } : null,
-                              validator: (value) {
-                                if (_isEditing && (value == null || value.isEmpty)) {
-                                  return 'Por favor, selecione seu tipo sanguíneo';
-                                }
-                                return null;
-                              },
-                            ),
+                              const SizedBox(height: 16),
+                              
+                              Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  TextFormField(
+                                    controller: _phoneController,
+                                    decoration: const InputDecoration(
+                                      labelText: 'Telefone',
+                                      labelStyle: TextStyle(color: Color(0xFF424242)),
+                                      prefixIcon: Icon(Icons.phone, color: Color(0xFF616161)),
+                                      border: OutlineInputBorder(),
+                                      focusedBorder: OutlineInputBorder(
+                                        borderSide: BorderSide(color: Color(0xFF0D47A1), width: 2),
+                                      ),
+                                    ),
+                                    enabled: _isEditing,
+                                    keyboardType: TextInputType.phone,
+                                  ),
+                                  _buildPhoneHint(),
+                                ],
+                              ),
+                              const SizedBox(height: 16),
+                              
+                              TextFormField(
+                                controller: _ageController,
+                                decoration: const InputDecoration(
+                                  labelText: 'Idade',
+                                  labelStyle: TextStyle(color: Color(0xFF424242)),
+                                  prefixIcon: Icon(Icons.cake, color: Color(0xFF616161)),
+                                  border: OutlineInputBorder(),
+                                  focusedBorder: OutlineInputBorder(
+                                    borderSide: BorderSide(color: Color(0xFF0D47A1), width: 2),
+                                  ),
+                                ),
+                                enabled: _isEditing,
+                                keyboardType: TextInputType.number,
+                              ),
+                              const SizedBox(height: 16),
+                              
+                              DropdownButtonFormField<String>(
+                                value: _bloodTypeController.text.isNotEmpty 
+                                    ? _bloodTypeController.text 
+                                    : null,
+                                decoration: const InputDecoration(
+                                  labelText: 'Tipo Sanguíneo',
+                                  labelStyle: TextStyle(color: Color(0xFF424242)),
+                                  prefixIcon: Icon(Icons.bloodtype, color: Color(0xFF616161)),
+                                  border: OutlineInputBorder(),
+                                  focusedBorder: OutlineInputBorder(
+                                    borderSide: BorderSide(color: Color(0xFF0D47A1), width: 2),
+                                  ),
+                                ),
+                                dropdownColor: Colors.white,
+                                items: const [
+                                  DropdownMenuItem(value: 'A+', child: Text('A+', style: TextStyle(color: Colors.black))),
+                                  DropdownMenuItem(value: 'A-', child: Text('A-', style: TextStyle(color: Colors.black))),
+                                  DropdownMenuItem(value: 'B+', child: Text('B+', style: TextStyle(color: Colors.black))),
+                                  DropdownMenuItem(value: 'B-', child: Text('B-', style: TextStyle(color: Colors.black))),
+                                  DropdownMenuItem(value: 'AB+', child: Text('AB+', style: TextStyle(color: Colors.black))),
+                                  DropdownMenuItem(value: 'AB-', child: Text('AB-', style: TextStyle(color: Colors.black))),
+                                  DropdownMenuItem(value: 'O+', child: Text('O+', style: TextStyle(color: Colors.black))),
+                                  DropdownMenuItem(value: 'O-', child: Text('O-', style: TextStyle(color: Colors.black))),
+                                  DropdownMenuItem(value: 'Não sei', child: Text('Não sei', style: TextStyle(color: Colors.black))),
+                                ],
+                                onChanged: _isEditing ? (value) {
+                                  setState(() {
+                                    _bloodTypeController.text = value ?? '';
+                                  });
+                                } : null,
+                                validator: (value) {
+                                  if (_isEditing && (value == null || value.isEmpty)) {
+                                    return 'Por favor, selecione seu tipo sanguíneo';
+                                  }
+                                  return null;
+                                },
+                              ),
+                            ] else ...[
+                              // Modo visualização
+                              _buildInfoRow('Nome completo:', _nameController.text, isBold: true),
+                              _buildInfoRow('E-mail:', _emailController.text),
+                              _buildInfoRow('Telefone:', _phoneController.text.isNotEmpty ? _phoneController.text : 'Não informado'),
+                              _buildInfoRow('Idade:', _ageController.text.isNotEmpty ? _ageController.text : 'Não informada'),
+                              _buildInfoRow('Tipo Sanguíneo:', _bloodTypeController.text.isNotEmpty ? _bloodTypeController.text : 'Não informado'),
+                            ],
                           ],
                         ),
                       ),
@@ -1009,13 +1130,14 @@ class _ProfilePageState extends State<ProfilePage> {
                     
                     const SizedBox(height: 20),
                     
+                    // Contato de Emergência
                     Card(
-                      elevation: 2,
+                      elevation: 3,
                       shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
+                        borderRadius: BorderRadius.circular(16),
                       ),
                       child: Padding(
-                        padding: const EdgeInsets.all(16),
+                        padding: const EdgeInsets.all(20),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
@@ -1024,36 +1146,53 @@ class _ProfilePageState extends State<ProfilePage> {
                               style: TextStyle(
                                 fontSize: 20,
                                 fontWeight: FontWeight.bold,
-                                color: Color(0xFF212121),
+                                color: Color(0xFF0D47A1), // Azul escuro
                               ),
                             ),
+                            const SizedBox(height: 8),
+                            const Divider(color: Color(0xFFBDBDBD), thickness: 1),
                             const SizedBox(height: 16),
                             
-                            TextFormField(
-                              controller: _emergencyNameController,
-                              decoration: const InputDecoration(
-                                labelText: 'Nome do contato',
-                                prefixIcon: Icon(Icons.contact_emergency, color: Color(0xFF757575)),
-                              ),
-                              enabled: _isEditing,
-                            ),
-                            const SizedBox(height: 16),
-                            
-                            Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                TextFormField(
-                                  controller: _emergencyPhoneController,
-                                  decoration: const InputDecoration(
-                                    labelText: 'Telefone do contato',
-                                    prefixIcon: Icon(Icons.phone, color: Color(0xFF757575)),
+                            if (_isEditing) ...[
+                              TextFormField(
+                                controller: _emergencyNameController,
+                                decoration: const InputDecoration(
+                                  labelText: 'Nome do contato',
+                                  labelStyle: TextStyle(color: Color(0xFF424242)),
+                                  prefixIcon: Icon(Icons.contact_emergency, color: Color(0xFF616161)),
+                                  border: OutlineInputBorder(),
+                                  focusedBorder: OutlineInputBorder(
+                                    borderSide: BorderSide(color: Color(0xFF0D47A1), width: 2),
                                   ),
-                                  enabled: _isEditing,
-                                  keyboardType: TextInputType.phone,
                                 ),
-                                _buildPhoneHint(),
-                              ],
-                            ),
+                                enabled: _isEditing,
+                              ),
+                              const SizedBox(height: 16),
+                              
+                              Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  TextFormField(
+                                    controller: _emergencyPhoneController,
+                                    decoration: const InputDecoration(
+                                      labelText: 'Telefone do contato',
+                                      labelStyle: TextStyle(color: Color(0xFF424242)),
+                                      prefixIcon: Icon(Icons.phone, color: Color(0xFF616161)),
+                                      border: OutlineInputBorder(),
+                                      focusedBorder: OutlineInputBorder(
+                                        borderSide: BorderSide(color: Color(0xFF0D47A1), width: 2),
+                                      ),
+                                    ),
+                                    enabled: _isEditing,
+                                    keyboardType: TextInputType.phone,
+                                  ),
+                                  _buildPhoneHint(),
+                                ],
+                              ),
+                            ] else ...[
+                              _buildInfoRow('Nome:', _emergencyNameController.text.isNotEmpty ? _emergencyNameController.text : 'Não informado', isBold: true),
+                              _buildInfoRow('Telefone:', _emergencyPhoneController.text.isNotEmpty ? _emergencyPhoneController.text : 'Não informado'),
+                            ],
                           ],
                         ),
                       ),
@@ -1061,13 +1200,14 @@ class _ProfilePageState extends State<ProfilePage> {
                     
                     const SizedBox(height: 20),
                     
+                    // Observações
                     Card(
-                      elevation: 2,
+                      elevation: 3,
                       shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
+                        borderRadius: BorderRadius.circular(16),
                       ),
                       child: Padding(
-                        padding: const EdgeInsets.all(16),
+                        padding: const EdgeInsets.all(20),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
@@ -1076,27 +1216,101 @@ class _ProfilePageState extends State<ProfilePage> {
                               style: TextStyle(
                                 fontSize: 20,
                                 fontWeight: FontWeight.bold,
-                                color: Color(0xFF212121),
+                                color: Color(0xFF0D47A1), // Azul escuro
                               ),
                             ),
+                            const SizedBox(height: 8),
+                            const Divider(color: Color(0xFFBDBDBD), thickness: 1),
                             const SizedBox(height: 16),
                             
-                            TextFormField(
-                              controller: _observationsController,
-                              decoration: const InputDecoration(
-                                labelText: 'Observações médicas ou alergias',
-                                prefixIcon: Icon(Icons.note, color: Color(0xFF757575)),
+                            if (_isEditing) ...[
+                              TextFormField(
+                                controller: _observationsController,
+                                decoration: const InputDecoration(
+                                  labelText: 'Observações médicas ou alergias',
+                                  labelStyle: TextStyle(color: Color(0xFF424242)),
+                                  prefixIcon: Icon(Icons.note, color: Color(0xFF616161)),
+                                  border: OutlineInputBorder(),
+                                  focusedBorder: OutlineInputBorder(
+                                    borderSide: BorderSide(color: Color(0xFF0D47A1), width: 2),
+                                  ),
+                                ),
+                                enabled: _isEditing,
+                                maxLines: 3,
                               ),
-                              enabled: _isEditing,
-                              maxLines: 3,
-                            ),
+                            ] else ...[
+                              Padding(
+                                padding: const EdgeInsets.symmetric(vertical: 8),
+                                child: Text(
+                                  _observationsController.text.isNotEmpty 
+                                      ? _observationsController.text 
+                                      : 'Nenhuma observação cadastrada',
+                                  style: settings.getTextStyle(
+                                    color: _observationsController.text.isNotEmpty 
+                                        ? Colors.black87 
+                                        : const Color(0xFF757575),
+                                    fontStyle: _observationsController.text.isNotEmpty 
+                                        ? FontStyle.normal 
+                                        : FontStyle.italic,
+                                  ),
+                                ),
+                              ),
+                            ],
                           ],
                         ),
                       ),
                     ),
-                    
+                    const SizedBox(height: 30),
+
+                      // Botão Salvar Online
+                      if (!_isCloudUser) ...[
+                        Center(
+                          child: Container(
+                            width: 280,
+                            height: 48,
+                            margin: const EdgeInsets.symmetric(vertical: 8),
+                            child: ElevatedButton(
+                              onPressed: _navigateToCloudLogin,
+                              style: settings.getElevatedButtonStyle(
+                                backgroundColor: const Color(0xFF2E7D32), // Verde escuro
+                                foregroundColor: Colors.white,
+                              ),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(Icons.cloud_upload, size: 22),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    'SALVAR ONLINE',
+                                    style: settings.getTextStyle(
+                                      size: settings.buttonFontSize,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                        
+                        const Padding(
+                          padding: EdgeInsets.only(top: 4, bottom: 16),
+                          child: Text(
+                            'Crie uma conta na nuvem para salvar seus medicamentos\n'
+                            'e acessá-los de qualquer lugar!',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: Color(0xFF616161),
+                            ),
+                          ),
+                        ),
+                      ],
                     const SizedBox(height: 30),
                     
+                    // Botão de Sair da Conta
                     if (_isCloudUser) ...[
                       Center(
                         child: Container(
@@ -1106,26 +1320,26 @@ class _ProfilePageState extends State<ProfilePage> {
                           child: ElevatedButton(
                             onPressed: _confirmLogout,
                             style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(0xFFD32F2F),
+                              backgroundColor: const Color(0xFFB71C1C), // Vermelho mais escuro
                               foregroundColor: Colors.white,
                               shape: RoundedRectangleBorder(
                                 borderRadius: BorderRadius.circular(30),
                               ),
-                              elevation: 2,
+                              elevation: 3,
                               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
                             ),
-                            child: const Row(
+                            child: Row(
                               mainAxisAlignment: MainAxisAlignment.center,
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                Icon(Icons.exit_to_app, size: 20),
-                                SizedBox(width: 8),
+                                const Icon(Icons.exit_to_app, size: 22),
+                                const SizedBox(width: 8),
                                 Text(
                                   'SAIR DA CONTA',
-                                  style: TextStyle(
-                                    fontSize: 16,
+                                  style: settings.getTextStyle(
+                                    size: settings.buttonFontSize,
                                     fontWeight: FontWeight.bold,
-                                    letterSpacing: 0.5,
+                                    color: Colors.white,
                                   ),
                                 ),
                               ],
@@ -1142,7 +1356,7 @@ class _ProfilePageState extends State<ProfilePage> {
                           textAlign: TextAlign.center,
                           style: TextStyle(
                             fontSize: 13,
-                            color: Color(0xFF757575),
+                            color: Color(0xFF616161), // Cinza mais escuro
                           ),
                         ),
                       ),

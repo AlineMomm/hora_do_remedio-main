@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import '../services/sync_service.dart';
-import '../services/firebase_service.dart';
+import '../services/settings_service.dart';
 import '../pages/cloud_login_page.dart';
 
 class SyncButton extends StatefulWidget {
@@ -20,7 +21,6 @@ class _SyncButtonState extends State<SyncButton> {
   bool _isSyncing = false;
 
   Future<void> _handleSyncPress() async {
-    // Verificar status da sincronização
     final status = await _syncService.getSyncStatus();
     
     if (!status['hasInternet']) {
@@ -33,10 +33,8 @@ class _SyncButtonState extends State<SyncButton> {
     }
 
     if (status['isLoggedIn']) {
-      // Já está logado, pergunta se quer sincronizar
       _showSyncDialog();
     } else {
-      // Não está logado, oferece opções de login/registro
       _showLoginOptions();
     }
   }
@@ -45,9 +43,9 @@ class _SyncButtonState extends State<SyncButton> {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Sincronizar com a Nuvem'),
+        title: const Text('Salvar na Nuvem'),
         content: const Text(
-          'Para sincronizar seus dados com a nuvem, você precisa ter uma conta.\n\n'
+          'Para salvar seus medicamentos online, você precisa ter uma conta.\n\n'
           'Isso permite que seus medicamentos fiquem salvos mesmo se você trocar de celular!'
         ),
         actions: [
@@ -61,7 +59,7 @@ class _SyncButtonState extends State<SyncButton> {
               _navigateToCloudLogin();
             },
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF1976D2),
+              backgroundColor: const Color(0xFF2E7D32),
             ),
             child: const Text('Fazer Login/Cadastro'),
           ),
@@ -74,10 +72,10 @@ class _SyncButtonState extends State<SyncButton> {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Sincronizar Dados'),
+        title: const Text('Sincronizar com a Nuvem'),
         content: const Text(
           'Deseja sincronizar seus medicamentos com a nuvem?\n\n'
-          'Isso vai enviar todos os seus dados locais para sua conta na nuvem.'
+          'Isso vai enviar todos os seus dados para sua conta online.'
         ),
         actions: [
           TextButton(
@@ -90,7 +88,7 @@ class _SyncButtonState extends State<SyncButton> {
               _performSync();
             },
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF4CAF50),
+              backgroundColor: const Color(0xFF2E7D32),
             ),
             child: const Text('Sincronizar Agora'),
           ),
@@ -100,42 +98,41 @@ class _SyncButtonState extends State<SyncButton> {
   }
 
   Future<void> _performSync() async {
-  setState(() {
-    _isSyncing = true;
-  });
+    setState(() {
+      _isSyncing = true;
+    });
 
-  try {
-    final cloudUserId = await _syncService.getCloudUserId();
-    if (cloudUserId != null) {
-      await _syncService.syncLocalToCloud(cloudUserId);
-      
+    try {
+      final cloudUserId = await _syncService.getCloudUserId();
+      if (cloudUserId != null) {
+        await _syncService.syncLocalToCloud(cloudUserId);
+        
+        if (!mounted) return;
+        
+        _showMessage(
+          'Sucesso!',
+          'Dados salvos na nuvem.',
+          Icons.cloud_done,
+          isSuccess: true,
+        );
+        
+        widget.onSyncComplete();
+      }
+    } catch (e) {
       if (!mounted) return;
       
       _showMessage(
-        'Sucesso!',
-        'Dados sincronizados com a nuvem.',
-        Icons.cloud_done,
-        isSuccess: true,
+        'Erro',
+        'Não foi possível salvar: $e',
+        Icons.error,
+        isSuccess: false,
       );
-      
-      // Atualizar a lista após sincronizar
-      widget.onSyncComplete();
+    } finally {
+      setState(() {
+        _isSyncing = false;
+      });
     }
-  } catch (e) {
-    if (!mounted) return;
-    
-    _showMessage(
-      'Erro',
-      'Não foi possível sincronizar: $e',
-      Icons.error,
-      isSuccess: false,
-    );
-  } finally {
-    setState(() {
-      _isSyncing = false;
-    });
   }
-}
 
   void _showMessage(String title, String message, IconData icon, {bool isSuccess = true}) {
     showDialog(
@@ -148,7 +145,7 @@ class _SyncButtonState extends State<SyncButton> {
             Icon(
               icon,
               size: 50,
-              color: isSuccess ? const Color(0xFF4CAF50) : const Color(0xFFD32F2F),
+              color: isSuccess ? const Color(0xFF2E7D32) : const Color(0xFFD32F2F),
             ),
             const SizedBox(height: 16),
             Text(message),
@@ -179,24 +176,41 @@ class _SyncButtonState extends State<SyncButton> {
 
   @override
   Widget build(BuildContext context) {
-    return Stack(
-      alignment: Alignment.center,
-      children: [
-        IconButton(
-          icon: const Icon(Icons.cloud_upload),
-          onPressed: _isSyncing ? null : _handleSyncPress,
-          tooltip: 'Sincronizar com a nuvem',
+    final settings = Provider.of<SettingsService>(context);
+    
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 4),
+      child: TextButton(
+        onPressed: _isSyncing ? null : _handleSyncPress,
+        style: TextButton.styleFrom(
+          foregroundColor: Colors.white,
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         ),
-        if (_isSyncing)
-          const SizedBox(
-            width: 24,
-            height: 24,
-            child: CircularProgressIndicator(
-              strokeWidth: 2,
-              valueColor: AlwaysStoppedAnimation(Colors.white),
-            ),
-          ),
-      ],
+        child: _isSyncing
+            ? const SizedBox(
+                width: 24,
+                height: 24,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  valueColor: AlwaysStoppedAnimation(Colors.white),
+                ),
+              )
+            : Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.cloud_upload, size: 20),
+                  const SizedBox(width: 4),
+                  Text(
+                    'Salvar Online',
+                    style: settings.getTextStyle(
+                      size: 14,
+                      fontWeight: FontWeight.w500,
+                      color: Colors.white,
+                    ),
+                  ),
+                ],
+              ),
+      ),
     );
   }
 }
