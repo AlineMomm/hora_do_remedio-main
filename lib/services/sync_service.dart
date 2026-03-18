@@ -10,17 +10,36 @@ import 'package:flutter/material.dart';
 class SyncService extends ChangeNotifier {
   static final SyncService _instance = SyncService._internal();
   factory SyncService() => _instance;
-  
+
   final FirebaseService _firebaseService = FirebaseService();
-  final MedicationService _medicationService = MedicationService();
-  
+
   late final FlutterSecureStorage? _secureStorage;
   late final bool _useSecureStorage;
-  
+
   static const String _syncEnabledKey = 'sync_enabled';
   static const String _lastSyncKey = 'last_sync';
   static const String _cloudUserIdKey = 'cloud_user_id';
   static const String _localUserIdKey = 'local_user_id';
+
+  // Getter para verificar se o usuário está logado na nuvem (assíncrono)
+  Future<bool> get isLoggedIn async => (await getCloudUserId()) != null;
+
+  // Método para obter o ID do usuário atual (prioriza nuvem, depois local)
+  Future<String?> getCurrentUserId() async {
+    final cloudId = await getCloudUserId();
+    if (cloudId != null) return cloudId;
+    return await getLocalUserId();
+  }
+
+  // Método para sincronizar medicamentos (usa o ID do usuário atual)
+  Future<void> syncMedications() async {
+    final userId = await getCurrentUserId();
+    if (userId == null) {
+      print('⚠️ Nenhum usuário encontrado para sincronizar');
+      return;
+    }
+    await syncLocalToCloud(userId);
+  }
 
   SyncService._internal() {
     if (kIsWeb) {
@@ -107,58 +126,65 @@ class SyncService extends ChangeNotifier {
 
   // FUNÇÃO AUXILIAR: Comparar medicamentos por nome e horário (não apenas ID)
   bool _isSameMedication(MedicationModel a, MedicationModel b) {
-    return a.name == b.name && 
-           a.hour == b.hour && 
-           a.minute == b.minute;
+    return a.name == b.name && a.hour == b.hour && a.minute == b.minute;
   }
 
   // MODIFICADO: Migrar medicamentos locais para o usuário da nuvem
   Future<void> _migrateLocalMedicationsToCloud(String cloudUserId) async {
     try {
       final localUserId = await getLocalUserId();
-      
-      print('🔍 Verificando migração: localUserId=$localUserId, cloudUserId=$cloudUserId');
-      
+
+      print(
+          '🔍 Verificando migração: localUserId=$localUserId, cloudUserId=$cloudUserId');
+
       if (localUserId == null) {
         print('⚠️ Nenhum ID local encontrado');
         return;
       }
-      
+
       if (localUserId == cloudUserId) {
         print('📌 IDs iguais, não precisa migrar');
         return;
       }
-      
-      print('🔄 Migrando medicamentos locais do usuário $localUserId para $cloudUserId...');
-      
+
+      print(
+          '🔄 Migrando medicamentos locais do usuário $localUserId para $cloudUserId...');
+
       // Carregar medicamentos do usuário local
-      final localMeds = await _medicationService.getMedicationsList(localUserId);
-      
+      final localMeds =
+          await MedicationService().getMedicationsList(localUserId);
+
       if (localMeds.isNotEmpty) {
-        print('📦 Encontrados ${localMeds.length} medicamentos locais para migrar');
-        
+        print(
+            '📦 Encontrados ${localMeds.length} medicamentos locais para migrar');
+
         // Carregar medicamentos existentes na nuvem
-        final cloudMeds = await _firebaseService.loadMedicationsFromCloud(cloudUserId);
-        
+        final cloudMeds =
+            await _firebaseService.loadMedicationsFromCloud(cloudUserId);
+
         int migrados = 0;
         int ignorados = 0;
-        
+
         for (var localMed in localMeds) {
           bool existeNaNuvem = false;
-          
+
           // Verificar se já existe na nuvem (por nome e horário)
           for (var cloudMed in cloudMeds) {
             if (_isSameMedication(localMed, cloudMed)) {
               existeNaNuvem = true;
-              print('   ⏭️ Já existe na nuvem: ${localMed.name} (${localMed.formattedTime})');
+              print(
+                  '   ⏭️ Já existe na nuvem: ${localMed.name} (${localMed.formattedTime})');
               break;
             }
           }
-          
+
           if (!existeNaNuvem) {
-            print('   ✅ Migrando: ${localMed.name} (${localMed.formattedTime})');
+            print(
+                '   ✅ Migrando: ${localMed.name} (${localMed.formattedTime})');
             final newMed = MedicationModel(
-              id: DateTime.now().millisecondsSinceEpoch.toString(), // NOVO ID para evitar conflitos
+              id: DateTime.now()
+                  .millisecondsSinceEpoch
+                  .toString(), // NOVO ID para evitar conflitos
               userId: cloudUserId,
               name: localMed.name,
               hour: localMed.hour,
@@ -167,20 +193,23 @@ class SyncService extends ChangeNotifier {
               notes: localMed.notes,
               createdAt: localMed.createdAt,
             );
-            await _medicationService.addMedication(newMed);
+            await MedicationService().addMedication(newMed);
             migrados++;
           } else {
             ignorados++;
           }
         }
-        
+
         if (migrados > 0) {
           // Sincronizar com a nuvem
-          final allMeds = await _medicationService.getMedicationsList(cloudUserId);
+          final allMeds =
+              await MedicationService().getMedicationsList(cloudUserId);
           await _firebaseService.syncMedicationsToCloud(cloudUserId, allMeds);
-          print('✅ Migração concluída! $migrados medicamentos migrados, $ignorados ignorados');
+          print(
+              '✅ Migração concluída! $migrados medicamentos migrados, $ignorados ignorados');
         } else {
-          print('📌 Nenhum medicamento novo para migrar ($ignorados ignorados)');
+          print(
+              '📌 Nenhum medicamento novo para migrar ($ignorados ignorados)');
         }
       } else {
         print('📦 Nenhum medicamento local para migrar');
@@ -190,73 +219,79 @@ class SyncService extends ChangeNotifier {
     }
   }
 
-Future<void> _mergeCloudWithLocal(String cloudUserId) async {
-  try {
-    print('🔄 Mesclando dados da nuvem com locais...');
-    
-    final cloudMeds = await _firebaseService.loadMedicationsFromCloud(cloudUserId);
-    
-    // Ordenar medicamentos da nuvem
-    final sortedCloudMeds = List<MedicationModel>.from(cloudMeds);
-    sortedCloudMeds.sort((a, b) {
-      if (a.hour != b.hour) return a.hour.compareTo(b.hour);
-      if (a.minute != b.minute) return a.minute.compareTo(b.minute);
-      return a.name.compareTo(b.name);
-    });
-    
-    if (sortedCloudMeds.isNotEmpty) {
-      print('📦 Carregando ${sortedCloudMeds.length} medicamentos da nuvem');
-      
-      final localMeds = await _medicationService.getMedicationsList(cloudUserId);
-      
-      final Map<String, MedicationModel> existingMeds = {};
-      for (var med in localMeds) {
-        final key = '${med.name}_${med.hour}_${med.minute}';
-        existingMeds[key] = med;
-      }
-      
-      int adicionados = 0;
-      int ignorados = 0;
-      
-      for (var cloudMed in sortedCloudMeds) {
-        final key = '${cloudMed.name}_${cloudMed.hour}_${cloudMed.minute}';
-        
-        if (!existingMeds.containsKey(key)) {
-          print('   ✅ Adicionando localmente: ${cloudMed.name} (${cloudMed.formattedTime})');
-          await _medicationService.addMedication(cloudMed);
-          adicionados++;
-        } else {
-          print('   ⏭️ Já existe localmente: ${cloudMed.name} (${cloudMed.formattedTime})');
-          ignorados++;
+  Future<void> _mergeCloudWithLocal(String cloudUserId) async {
+    try {
+      print('🔄 Mesclando dados da nuvem com locais...');
+
+      final cloudMeds =
+          await _firebaseService.loadMedicationsFromCloud(cloudUserId);
+
+      // Ordenar medicamentos da nuvem
+      final sortedCloudMeds = List<MedicationModel>.from(cloudMeds);
+      sortedCloudMeds.sort((a, b) {
+        if (a.hour != b.hour) return a.hour.compareTo(b.hour);
+        if (a.minute != b.minute) return a.minute.compareTo(b.minute);
+        return a.name.compareTo(b.name);
+      });
+
+      if (sortedCloudMeds.isNotEmpty) {
+        print('📦 Carregando ${sortedCloudMeds.length} medicamentos da nuvem');
+
+        final localMeds =
+            await MedicationService().getMedicationsList(cloudUserId);
+
+        final Map<String, MedicationModel> existingMeds = {};
+        for (var med in localMeds) {
+          final key = '${med.name}_${med.hour}_${med.minute}';
+          existingMeds[key] = med;
         }
+
+        int adicionados = 0;
+        int ignorados = 0;
+
+        for (var cloudMed in sortedCloudMeds) {
+          final key = '${cloudMed.name}_${cloudMed.hour}_${cloudMed.minute}';
+
+          if (!existingMeds.containsKey(key)) {
+            print(
+                '   ✅ Adicionando localmente: ${cloudMed.name} (${cloudMed.formattedTime})');
+            await MedicationService().addMedication(cloudMed);
+            adicionados++;
+          } else {
+            print(
+                '   ⏭️ Já existe localmente: ${cloudMed.name} (${cloudMed.formattedTime})');
+            ignorados++;
+          }
+        }
+
+        print(
+            '✅ Mesclagem concluída: $adicionados novos medicamentos adicionados, $ignorados ignorados');
+      } else {
+        print('📦 Nenhum medicamento na nuvem');
       }
-      
-      print('✅ Mesclagem concluída: $adicionados novos medicamentos adicionados, $ignorados ignorados');
-    } else {
-      print('📦 Nenhum medicamento na nuvem');
+    } catch (e) {
+      print('❌ Erro ao mesclar dados: $e');
     }
-  } catch (e) {
-    print('❌ Erro ao mesclar dados: $e');
   }
-}
 
   Future<bool> loginToCloud(String email, String password) async {
     try {
-      final user = await _firebaseService.signInWithEmailAndPassword(email, password);
+      final user =
+          await _firebaseService.signInWithEmailAndPassword(email, password);
       if (user != null) {
         final oldLocalUserId = await getLocalUserId();
-        
+
         print('🔑 Login: oldLocal=$oldLocalUserId, newCloud=${user.uid}');
-        
+
         await setCloudUserId(user.uid);
         await setSyncEnabled(true);
-        
+
         await _mergeCloudWithLocal(user.uid);
-        
+
         if (oldLocalUserId != null && oldLocalUserId != user.uid) {
           await _migrateLocalMedicationsToCloud(user.uid);
         }
-        
+
         notifyListeners(); // Notificar ouvintes
         return true;
       }
@@ -267,21 +302,23 @@ Future<void> _mergeCloudWithLocal(String cloudUserId) async {
     }
   }
 
-  Future<bool> registerInCloud(String name, String email, String password) async {
+  Future<bool> registerInCloud(
+      String name, String email, String password) async {
     try {
-      final user = await _firebaseService.registerWithEmailAndPassword(name, email, password);
+      final user = await _firebaseService.registerWithEmailAndPassword(
+          name, email, password);
       if (user != null) {
         final oldLocalUserId = await getLocalUserId();
-        
+
         print('📝 Registro: oldLocal=$oldLocalUserId, newCloud=${user.uid}');
-        
+
         await setCloudUserId(user.uid);
         await setSyncEnabled(true);
-        
+
         if (oldLocalUserId != null) {
           await _migrateLocalMedicationsToCloud(user.uid);
         }
-        
+
         notifyListeners(); // Notificar ouvintes
         return true;
       }
@@ -305,12 +342,12 @@ Future<void> _mergeCloudWithLocal(String cloudUserId) async {
     }
 
     try {
-      final localMeds = await _medicationService.getMedicationsList(userId);
+      final localMeds = await MedicationService().getMedicationsList(userId);
       await _firebaseService.syncMedicationsToCloud(userId, localMeds);
-      
+
       final prefs = await SharedPreferences.getInstance();
       await prefs.setInt(_lastSyncKey, DateTime.now().millisecondsSinceEpoch);
-      
+
       print('✅ Sincronização concluída');
     } catch (e) {
       print('❌ Erro na sincronização: $e');
@@ -319,67 +356,67 @@ Future<void> _mergeCloudWithLocal(String cloudUserId) async {
   }
 
   Future<List<MedicationModel>> loadFromCloud(String userId) async {
-  if (!await hasInternetConnection()) {
-    throw 'Sem conexão com a internet';
-  }
+    if (!await hasInternetConnection()) {
+      throw 'Sem conexão com a internet';
+    }
 
-  try {
-    print('📥 Carregando medicamentos da nuvem para $userId');
-    final cloudMeds = await _firebaseService.loadMedicationsFromCloud(userId);
-    
-    // Ordenar medicamentos da nuvem
-    final sortedCloudMeds = List<MedicationModel>.from(cloudMeds);
-    sortedCloudMeds.sort((a, b) {
-      if (a.hour != b.hour) return a.hour.compareTo(b.hour);
-      if (a.minute != b.minute) return a.minute.compareTo(b.minute);
-      return a.name.compareTo(b.name);
-    });
-    
-    print('📦 Encontrados ${sortedCloudMeds.length} medicamentos na nuvem');
-    
-    // Carregar medicamentos locais atuais
-    final localMeds = await _medicationService.getMedicationsList(userId);
-    
-    int adicionados = 0;
-    
-    // Adicionar medicamentos da nuvem que não existem localmente
-    for (var cloudMed in sortedCloudMeds) {
-      bool existeLocal = false;
-      
-      for (var localMed in localMeds) {
-        if (_isSameMedication(cloudMed, localMed)) {
-          existeLocal = true;
-          break;
+    try {
+      print('📥 Carregando medicamentos da nuvem para $userId');
+      final cloudMeds = await _firebaseService.loadMedicationsFromCloud(userId);
+
+      // Ordenar medicamentos da nuvem
+      final sortedCloudMeds = List<MedicationModel>.from(cloudMeds);
+      sortedCloudMeds.sort((a, b) {
+        if (a.hour != b.hour) return a.hour.compareTo(b.hour);
+        if (a.minute != b.minute) return a.minute.compareTo(b.minute);
+        return a.name.compareTo(b.name);
+      });
+
+      print('📦 Encontrados ${sortedCloudMeds.length} medicamentos na nuvem');
+
+      // Carregar medicamentos locais atuais
+      final localMeds = await MedicationService().getMedicationsList(userId);
+
+      int adicionados = 0;
+
+      // Adicionar medicamentos da nuvem que não existem localmente
+      for (var cloudMed in sortedCloudMeds) {
+        bool existeLocal = false;
+
+        for (var localMed in localMeds) {
+          if (_isSameMedication(cloudMed, localMed)) {
+            existeLocal = true;
+            break;
+          }
+        }
+
+        if (!existeLocal) {
+          print('   ✅ Adicionando localmente: ${cloudMed.name}');
+          await MedicationService().addMedication(cloudMed);
+          adicionados++;
         }
       }
-      
-      if (!existeLocal) {
-        print('   ✅ Adicionando localmente: ${cloudMed.name}');
-        await _medicationService.addMedication(cloudMed);
-        adicionados++;
-      }
+
+      print(
+          '✅ LoadFromCloud concluído: $adicionados novos medicamentos adicionados');
+
+      // Retornar a lista completa
+      return await MedicationService().getMedicationsList(userId);
+    } catch (e) {
+      print('❌ Erro ao carregar da nuvem: $e');
+      rethrow;
     }
-    
-    print('✅ LoadFromCloud concluído: $adicionados novos medicamentos adicionados');
-    
-    // Retornar a lista completa
-    return await _medicationService.getMedicationsList(userId);
-    
-  } catch (e) {
-    print('❌ Erro ao carregar da nuvem: $e');
-    rethrow;
   }
-}
 
   Future<void> updateUserProfileInCloud(UserModel user) async {
-  try {
-    await _firebaseService.updateUserProfile(user);
-    print('✅ Perfil atualizado na nuvem: ${user.name}');
-  } catch (e) {
-    print('❌ Erro ao atualizar perfil na nuvem: $e');
-    rethrow;
+    try {
+      await _firebaseService.updateUserProfile(user);
+      print('✅ Perfil atualizado na nuvem: ${user.name}');
+    } catch (e) {
+      print('❌ Erro ao atualizar perfil na nuvem: $e');
+      rethrow;
+    }
   }
-}
 
   Future<Map<String, dynamic>> getSyncStatus() async {
     final prefs = await SharedPreferences.getInstance();
@@ -392,7 +429,9 @@ Future<void> _mergeCloudWithLocal(String cloudUserId) async {
     return {
       'isEnabled': isEnabled,
       'isLoggedIn': cloudUserId != null,
-      'lastSync': lastSync != null ? DateTime.fromMillisecondsSinceEpoch(lastSync) : null,
+      'lastSync': lastSync != null
+          ? DateTime.fromMillisecondsSinceEpoch(lastSync)
+          : null,
       'hasInternet': hasInternet,
       'cloudUserId': cloudUserId,
       'localUserId': localUserId,

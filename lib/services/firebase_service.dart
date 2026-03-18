@@ -1,65 +1,84 @@
+// lib/services/firebase_service.dart
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import '../models/user_model.dart';
 import '../models/medication_model.dart';
+import '../firebase_options.dart';
 
 class FirebaseService {
   static final FirebaseService _instance = FirebaseService._internal();
   factory FirebaseService() => _instance;
   FirebaseService._internal();
 
-  final FirebaseAuth _auth = FirebaseAuth.instance;
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  // Usar late final para garantir que só serão inicializadas depois
+  late final FirebaseAuth _auth;
+  late final FirebaseFirestore _firestore;
 
-  User? get currentUser => _auth.currentUser;
-  bool get isSignedIn => _auth.currentUser != null;
-
-  // Configurações específicas para Web
-  static FirebaseOptions get firebaseOptions {
-    if (kIsWeb) {
-      return const FirebaseOptions(
-        apiKey: "AIzaSyC_gGil9MXuz6agSXHC05vTS8c9FV7i07s",
-        appId: "1:828522686230:web:1376d1593159d158671237", // ID da web
-        messagingSenderId: "828522686230",
-        projectId: "hora-do-remedio-165b3",
-        authDomain: "hora-do-remedio-165b3.firebaseapp.com", // Necessário para web
-        storageBucket: "hora-do-remedio-165b3.firebasestorage.app",
-      );
-    } else {
-      // Android/iOS
-      return const FirebaseOptions(
-        apiKey: "AIzaSyC_gGil9MXuz6agSXHC05vTS8c9FV7i07s",
-        appId: "1:828522686230:android:1376d1593159d158671237",
-        messagingSenderId: "828522686230",
-        projectId: "hora-do-remedio-165b3",
-        storageBucket: "hora-do-remedio-165b3.firebasestorage.app",
-      );
-    }
+  // Getters que garantem que as instâncias estão inicializadas
+  FirebaseAuth get auth {
+    if (!_isInitialized) _initInstances();
+    return _auth;
   }
+  
+  FirebaseFirestore get firestore {
+    if (!_isInitialized) _initInstances();
+    return _firestore;
+  }
+  
+  User? get currentUser {
+    if (!_isInitialized) _initInstances();
+    return _auth.currentUser;
+  }
+  
+  bool get isSignedIn {
+    if (!_isInitialized) _initInstances();
+    return _auth.currentUser != null;
+  }
+
+  bool _isInitialized = false;
 
   // ==================== INICIALIZAÇÃO ====================
   static Future<void> initialize() async {
     try {
-      await Firebase.initializeApp(
-        options: firebaseOptions,
-      );
-      
+      final options = DefaultFirebaseOptions.currentPlatform;
+
+      // Inicializar o Firebase primeiro
+      if (Firebase.apps.isEmpty) {
+        await Firebase.initializeApp(options: options);
+        print('✅ Firebase.initializeApp() executado');
+      } else {
+        print('ℹ️ Firebase já inicializado, ignorando reinit');
+      }
+
       // Configurações específicas para web
       if (kIsWeb) {
         await _configureWebAuth();
       }
+
+      // Agora sim, inicializar a instância singleton
+      _instance._initInstances();
       
       print('✅ Firebase inicializado com sucesso (${kIsWeb ? "Web" : "Android"})');
     } catch (e) {
       print('❌ Erro ao inicializar Firebase: $e');
+      rethrow;
+    }
+  }
+
+  // Inicializar as instâncias APÓS o Firebase.initializeApp()
+  void _initInstances() {
+    if (!_isInitialized) {
+      _auth = FirebaseAuth.instance;
+      _firestore = FirebaseFirestore.instance;
+      _isInitialized = true;
+      print('✅ Instâncias do Firebase inicializadas');
     }
   }
 
   // Configurações adicionais para web
   static Future<void> _configureWebAuth() async {
-    // Configurar persistência para web
     await FirebaseAuth.instance.setPersistence(Persistence.LOCAL);
   }
 
@@ -70,6 +89,9 @@ class FirebaseService {
     String password,
   ) async {
     try {
+      // Garantir que as instâncias estão inicializadas
+      if (!_isInitialized) _initInstances();
+      
       final UserCredential result = await _auth.createUserWithEmailAndPassword(
         email: email,
         password: password,
@@ -78,7 +100,6 @@ class FirebaseService {
       final User? user = result.user;
       if (user == null) throw 'Erro ao criar usuário';
 
-      // Atualizar nome do usuário
       await user.updateDisplayName(name);
       await user.reload();
 
@@ -112,6 +133,9 @@ class FirebaseService {
     String password,
   ) async {
     try {
+      // Garantir que as instâncias estão inicializadas
+      if (!_isInitialized) _initInstances();
+      
       final UserCredential result = await _auth.signInWithEmailAndPassword(
         email: email,
         password: password,
@@ -121,14 +145,17 @@ class FirebaseService {
       if (user == null) throw 'Usuário não encontrado';
 
       final doc = await _firestore.collection('users').doc(user.uid).get();
-      
+
       if (!doc.exists) {
         final userModel = UserModel(
           uid: user.uid,
           name: user.displayName ?? 'Usuário',
           email: user.email!,
         );
-        await _firestore.collection('users').doc(user.uid).set(userModel.toMap());
+        await _firestore
+            .collection('users')
+            .doc(user.uid)
+            .set(userModel.toMap());
         return userModel;
       }
 
@@ -151,17 +178,26 @@ class FirebaseService {
   }
 
   Future<void> signOut() async {
-    await _auth.signOut();
+    try {
+      if (!_isInitialized) _initInstances();
+      await _auth.signOut();
+    } catch (e) {
+      print('❌ Erro ao fazer logout: $e');
+    }
   }
 
   // ==================== MEDICAMENTOS ====================
-  Future<void> syncMedicationsToCloud(String userId, List<MedicationModel> medications) async {
+  Future<void> syncMedicationsToCloud(
+      String userId, List<MedicationModel> medications) async {
     try {
+      if (!_isInitialized) _initInstances();
+      
       final batch = _firestore.batch();
-      final userMedsRef = _firestore.collection('users').doc(userId).collection('medications');
+      final userMedsRef =
+          _firestore.collection('users').doc(userId).collection('medications');
 
       final existingSnapshot = await userMedsRef.get();
-      
+
       for (var doc in existingSnapshot.docs) {
         batch.delete(doc.reference);
       }
@@ -184,6 +220,8 @@ class FirebaseService {
 
   Future<List<MedicationModel>> loadMedicationsFromCloud(String userId) async {
     try {
+      if (!_isInitialized) _initInstances();
+      
       final snapshot = await _firestore
           .collection('users')
           .doc(userId)
@@ -206,6 +244,7 @@ class FirebaseService {
   // ==================== PERFIL ====================
   Future<void> updateUserProfile(UserModel user) async {
     try {
+      if (!_isInitialized) _initInstances();
       await _firestore.collection('users').doc(user.uid).update(user.toMap());
       print('✅ Perfil atualizado no Firebase');
     } catch (e) {
@@ -216,6 +255,7 @@ class FirebaseService {
 
   Future<UserModel?> getUserProfile(String uid) async {
     try {
+      if (!_isInitialized) _initInstances();
       final doc = await _firestore.collection('users').doc(uid).get();
       if (doc.exists) {
         return UserModel.fromMap(doc.data()!);

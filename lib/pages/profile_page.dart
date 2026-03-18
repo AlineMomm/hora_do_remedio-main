@@ -1329,21 +1329,17 @@ class _ProfilePageState extends State<ProfilePage> {
                               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
                             ),
                             child: Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                const Icon(Icons.exit_to_app, size: 22),
-                                const SizedBox(width: 8),
-                                Text(
-                                  'SAIR DA CONTA',
-                                  style: settings.getTextStyle(
-                                    size: settings.buttonFontSize,
-                                    fontWeight: FontWeight.bold,
-                                    color: Colors.white,
+                                Expanded(  // Isso resolve o overflow!
+                                  child: Text(
+                                    'SAIR DA CONTA',
+                                    overflow: TextOverflow.ellipsis, // Se ainda assim estourar, adiciona ...
                                   ),
                                 ),
+                                Icon(Icons.logout),
                               ],
-                            ),
+                            )
                           ),
                         ),
                       ),

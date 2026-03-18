@@ -222,6 +222,7 @@ class HelpPage extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Container(
                   padding: const EdgeInsets.all(8),
@@ -229,19 +230,23 @@ class HelpPage extends StatelessWidget {
                     color: const Color(0xFFE8F0FE),
                     borderRadius: BorderRadius.circular(8),
                   ),
-                  child: const Icon(
+                  child: Icon(
                     Icons.menu_book,
-                    color: Color(0xFF0D47A1),
-                    size: 24,
+                    color: const Color(0xFF0D47A1),
+                    size: settings.iconSize,
                   ),
                 ),
                 const SizedBox(width: 12),
-                Text(
-                  'Como usar as principais funções:',
-                  style: settings.getTextStyle(
-                    size: 20,
-                    fontWeight: FontWeight.bold,
-                    color: const Color(0xFF0D47A1),
+                Expanded(
+                  child: Text(
+                    'Como usar as principais funções:',
+                    style: settings.getTextStyle(
+                      size: 20,
+                      fontWeight: FontWeight.bold,
+                      color: const Color(0xFF0D47A1),
+                    ),
+                    maxLines: 2,
+                    softWrap: true,
                   ),
                 ),
               ],

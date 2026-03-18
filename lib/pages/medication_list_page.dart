@@ -411,18 +411,27 @@ void _onSyncChange() {
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(Icons.add, size: 24),
-            const SizedBox(width: 8),
-            Text(
-              'ADICIONAR MEDICAMENTO',
-              style: settings.getTextStyle(
-                size: settings.buttonFontSize,
-                fontWeight: FontWeight.bold,
-                color: Colors.white,
+            Icon(
+              Icons.add,
+              size: settings.iconSize,
+              color: Colors.white,
+            ),
+            SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'ADICIONAR MEDICAMENTO',
+                textAlign: TextAlign.center,
+                maxLines: 2,
+                softWrap: true,
+                style: settings.getTextStyle(
+                  size: 18,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white,
+                ),
               ),
             ),
           ],
-        ),
+        )
       ),
     );
   }

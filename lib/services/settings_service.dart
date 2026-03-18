@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-// Enum fora da classe (top-level)
 enum FontSize {
   pequeno(14.0, 'Pequeno'),
   normal(16.0, 'Normal'),
@@ -41,7 +40,20 @@ class SettingsService extends ChangeNotifier {
         return 65.0;
     }
   }
-
+double get iconSize {
+  switch (_currentFontSize) {
+    case FontSize.pequeno:
+      return 20;
+    case FontSize.normal:
+      return 24;
+    case FontSize.grande:
+      return 28;
+    case FontSize.muitoGrande:
+      return 32;
+    case FontSize.enorme:
+      return 36;
+  }
+}
   double get buttonFontSize {
     switch (_currentFontSize) {
       case FontSize.pequeno:
@@ -80,28 +92,32 @@ class SettingsService extends ChangeNotifier {
 
   // Obter estilo de texto com tamanho configurado
   TextStyle getTextStyle({
-    double? size,
-    FontWeight? fontWeight,
-    Color? color,
-    double? letterSpacing,
-    double? height,
-    FontStyle? fontStyle,
-    TextDecoration? decoration,
-    Color? decorationColor,
-  }) {
-    final double finalSize = size ?? _currentFontSize.value;
-    
-    return TextStyle(
-      fontSize: finalSize,
-      fontWeight: fontWeight,
-      color: color,
-      letterSpacing: letterSpacing,
-      height: height,
-      fontStyle: fontStyle,
-      decoration: decoration,
-      decorationColor: decorationColor,
-    );
-  }
+  double? size,
+  FontWeight? fontWeight,
+  Color? color,
+  double? letterSpacing,
+  double? height,
+  FontStyle? fontStyle,
+  TextDecoration? decoration,
+  Color? decorationColor,
+}) {
+  const double baseFontSize = 16.0; // tamanho "Normal"
+  final double scaleFactor = _currentFontSize.value / baseFontSize;
+
+  final double baseSize = size ?? baseFontSize;
+  final double finalSize = baseSize * scaleFactor;
+
+  return TextStyle(
+    fontSize: finalSize,
+    fontWeight: fontWeight,
+    color: color,
+    letterSpacing: letterSpacing,
+    height: height,
+    fontStyle: fontStyle,
+    decoration: decoration,
+    decorationColor: decorationColor,
+  );
+}
 
   // Estilo para botões elevados
   ButtonStyle getElevatedButtonStyle({
@@ -146,4 +162,5 @@ class SettingsService extends ChangeNotifier {
       ),
     );
   }
+  
 }
