@@ -1,3 +1,4 @@
+// lib/models/medication_model.dart
 import 'package:flutter/material.dart';
 
 class MedicationModel {
@@ -9,6 +10,7 @@ class MedicationModel {
   final String frequency;
   final String? notes;
   final DateTime createdAt;
+  final DateTime? lastTaken;
 
   MedicationModel({
     required this.id,
@@ -19,6 +21,7 @@ class MedicationModel {
     required this.frequency,
     this.notes,
     required this.createdAt,
+    this.lastTaken,
   });
 
   Map<String, dynamic> toMap() {
@@ -31,6 +34,7 @@ class MedicationModel {
       'frequency': frequency,
       'notes': notes,
       'createdAt': createdAt.millisecondsSinceEpoch,
+      'lastTaken': lastTaken?.millisecondsSinceEpoch,
     };
   }
 
@@ -46,10 +50,103 @@ class MedicationModel {
       createdAt: map['createdAt'] != null
           ? DateTime.fromMillisecondsSinceEpoch(map['createdAt'] as int)
           : DateTime.now(),
+      lastTaken: map['lastTaken'] != null
+          ? DateTime.fromMillisecondsSinceEpoch(map['lastTaken'] as int)
+          : null,
     );
   }
 
-  // NOVO: Método para comparar se é o mesmo medicamento (ignorando ID)
+  // 🔥 NOVO: Verifica se o medicamento pode ser tomado agora
+  bool get canTakeNow {
+    final now = DateTime.now();
+    final todayDoseTime = DateTime(
+      now.year,
+      now.month,
+      now.day,
+      hour,
+      minute,
+    );
+
+    // Se nunca foi tomado, pode tomar se o horário já passou ou está próximo
+    if (lastTaken == null) {
+      return now.isAfter(todayDoseTime) || 
+             (todayDoseTime.difference(now).inMinutes <= 30);
+    }
+
+    // Verifica se já tomou hoje
+    if (wasTakenToday) {
+      // Se já tomou hoje, só pode tomar novamente amanhã
+      final nextDose = DateTime(
+        now.year,
+        now.month,
+        now.day + 1,
+        hour,
+        minute,
+      );
+      return now.isAfter(nextDose);
+    }
+
+    // Se não tomou hoje, verifica se o horário de hoje já passou
+    return now.isAfter(todayDoseTime) || 
+           (todayDoseTime.difference(now).inMinutes <= 30);
+  }
+
+  // 🔥 NOVO: Calcula o próximo horário para tomar
+  DateTime get nextDoseTime {
+    final now = DateTime.now();
+    final todayDose = DateTime(
+      now.year,
+      now.month,
+      now.day,
+      hour,
+      minute,
+    );
+
+    if (lastTaken == null) {
+      // Se nunca tomou, próximo horário é hoje (se ainda não passou)
+      return todayDose.isAfter(now) ? todayDose : todayDose.add(Duration(days: 1));
+    }
+
+    if (!wasTakenToday && now.isBefore(todayDose)) {
+      // Se não tomou hoje e ainda não passou do horário
+      return todayDose;
+    }
+
+    // Próximo horário é amanhã
+    return DateTime(
+      now.year,
+      now.month,
+      now.day + 1,
+      hour,
+      minute,
+    );
+  }
+
+  // 🔥 NOVO: Status do medicamento
+  String get status {
+    if (canTakeNow) {
+      return 'Pode tomar';
+    } else if (wasTakenToday) {
+      final nextDose = nextDoseTime;
+      final hours = nextDose.difference(DateTime.now()).inHours;
+      final minutes = nextDose.difference(DateTime.now()).inMinutes % 60;
+      return 'Próxima dose em $hours h $minutes min';
+    } else {
+      final nextDose = nextDoseTime;
+      final hours = nextDose.difference(DateTime.now()).inHours;
+      final minutes = nextDose.difference(DateTime.now()).inMinutes % 60;
+      return 'Próximo horário em $hours h $minutes min';
+    }
+  }
+
+  bool get wasTakenToday {
+    if (lastTaken == null) return false;
+    final now = DateTime.now();
+    return lastTaken!.year == now.year &&
+           lastTaken!.month == now.month &&
+           lastTaken!.day == now.day;
+  }
+
   bool isSameAs(MedicationModel other) {
     return name == other.name && 
            hour == other.hour && 

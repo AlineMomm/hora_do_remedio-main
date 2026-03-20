@@ -1,4 +1,5 @@
 // lib/services/notification_service.dart
+import 'dart:async';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:timezone/data/latest.dart' as tz;
@@ -16,8 +17,11 @@ class NotificationService {
       kIsWeb ? null : FlutterLocalNotificationsPlugin();
   
   bool _webPermissionGranted = false;
+  final Map<int, Timer> _activeTimers = {};
 
+  // ==================== INICIALIZAÇÃO ====================
   Future<void> initialize() async {
+    print('🔔 Inicializando NotificationService...');
     if (kIsWeb) {
       await _initializeWebNotifications();
     } else {
@@ -25,38 +29,34 @@ class NotificationService {
     }
   }
 
-  // Inicialização para Web - CORRIGIDA
+  // ==================== WEB ====================
   Future<void> _initializeWebNotifications() async {
     try {
-      // Verificar suporte a notificações de forma simples
-      // Se chegamos aqui e o objeto web.Notification existe, já está bom
       print('🌐 Web: Inicializando notificações...');
-      
       final permission = await _requestWebPermission();
       _webPermissionGranted = permission;
-      
       print('🌐 Web: Permissão de notificações = $_webPermissionGranted');
     } catch (e) {
-      print('❌ Web: Erro ao inicializar notificações: $e');
+      print('❌ Web: Erro: $e');
     }
   }
 
-  // Solicitar permissão na web
   Future<bool> _requestWebPermission() async {
     try {
-      // No package:web, Notification.requestPermission retorna um Promise
       final permissionJS = web.Notification.requestPermission();
       final permission = await permissionJS.toDart;
       return permission == 'granted';
     } catch (e) {
-      print('❌ Web: Erro ao solicitar permissão: $e');
+      print('❌ Web: Erro permissão: $e');
       return false;
     }
   }
 
-  // Inicialização para Mobile
+  // ==================== MOBILE ====================
   Future<void> _initializeMobileNotifications() async {
     try {
+      print('📱 Mobile: Inicializando notificações...');
+      
       const AndroidInitializationSettings androidSettings = 
           AndroidInitializationSettings('@mipmap/ic_launcher');
       
@@ -79,23 +79,38 @@ class NotificationService {
 
       tz.initializeTimeZones();
       await _requestMobilePermissions();
+      
+      print('📱 Mobile: Notificações inicializadas com sucesso');
     } catch (e) {
       print('⚠️ Mobile: Erro ao inicializar notificações: $e');
     }
   }
 
+  Future<void> _requestMobilePermissions() async {
+    if (await Permission.notification.isDenied) {
+      await Permission.notification.request();
+    }
+  }
+
+  void _onNotificationTap(NotificationResponse response) {
+    print('📱 Mobile: Notificação clicada: ${response.payload}');
+  }
+
+  // ==================== AGENDAMENTO PRINCIPAL ====================
   Future<void> scheduleMedicationReminder({
     required int id,
     required String medicationName,
     required DateTime scheduledTime,
     String? observation,
   }) async {
+    print('📅 scheduleMedicationReminder CHAMADO para $medicationName');
+    print('   ID: $id');
+    print('   Horário: $scheduledTime');
+    print('   Agora: ${DateTime.now()}');
+    print('   kIsWeb = $kIsWeb');
+    
     if (kIsWeb) {
-      await _showWebNotification(
-        title: 'Hora do Remédio 💊',
-        body: 'Está na hora de tomar $medicationName${observation != null ? ': $observation' : ''}',
-      );
-      
+      print('➡️ Chamando _scheduleWebNotification');
       _scheduleWebNotification(
         id: id,
         title: 'Hora do Remédio 💊',
@@ -103,6 +118,7 @@ class NotificationService {
         scheduledTime: scheduledTime,
       );
     } else {
+      print('➡️ Chamando _scheduleMobileNotification');
       await _scheduleMobileNotification(
         id: id,
         medicationName: medicationName,
@@ -112,86 +128,108 @@ class NotificationService {
     }
   }
 
-  // Notificação imediata na Web
-  Future<void> _showWebNotification({
-    required String title,
-    required String body,
-  }) async {
-    if (!_webPermissionGranted) {
-      _webPermissionGranted = await _requestWebPermission();
-      
-      if (!_webPermissionGranted) {
-        print('⚠️ Web: Permissão negada para notificações');
-        if (kIsWeb) {
-          web.window.alert('Por favor, permita notificações para receber lembretes!');
-        }
-        return;
-      }
-    }
-
-    try {
-      final options = web.NotificationOptions(
-        body: body,
-        // icon: '/icons/icon-192.png', // Comente se não tiver ícone
-      );
-      
-      final notification = web.Notification(title, options);
-      
-      notification.onclick = ((web.Event event) {
-        print('🔔 Web: Notificação clicada: $title');
-        web.window.focus();
-      }).toJS;
-      
-      print('✅ Web: Notificação mostrada: $title');
-    } catch (e) {
-      print('❌ Web: Erro ao mostrar notificação: $e');
-    }
-  }
-
-  // Agendamento simulado na Web
+  // ==================== WEB: AGENDAMENTO ====================
   void _scheduleWebNotification({
     required int id,
     required String title,
     required String body,
     required DateTime scheduledTime,
   }) {
+    print('📅 _scheduleWebNotification EXECUTANDO');
+    print('   ID: $id');
+    print('   Título: $title');
+    print('   Horário alvo: $scheduledTime');
+    
     final now = DateTime.now();
     final delay = scheduledTime.difference(now);
     
-    if (delay.isNegative) {
-      final tomorrow = scheduledTime.add(const Duration(days: 1));
-      final newDelay = tomorrow.difference(now);
-      
-      Future.delayed(newDelay, () async {
-        await _showWebNotification(title: title, body: body);
-        _scheduleWebNotification(
-          id: id,
-          title: title,
-          body: body,
-          scheduledTime: tomorrow,
-        );
-      });
-      
-      print('🌐 Web: Notificação reagendada para amanhã (${newDelay.inMinutes} minutos)');
-      return;
-    }
-
-    print('🌐 Web: Notificação agendada para daqui ${delay.inMinutes} minutos');
+    print('   Delay calculado: ${delay.inSeconds} segundos');
     
-    Future.delayed(delay, () async {
-      await _showWebNotification(title: title, body: body);
-      
-      final tomorrow = scheduledTime.add(const Duration(days: 1));
+    if (delay.isNegative) {
+      print('⚠️ Horário já passou, reagendando para amanhã');
+      final tomorrow = DateTime(
+        now.year, now.month, now.day + 1,
+        scheduledTime.hour, scheduledTime.minute
+      );
       _scheduleWebNotification(
         id: id,
         title: title,
         body: body,
         scheduledTime: tomorrow,
       );
+      return;
+    }
+
+    if (_activeTimers.containsKey(id)) {
+      print('   Cancelando timer anterior #$id');
+      _activeTimers[id]!.cancel();
+      _activeTimers.remove(id);
+    }
+
+    print('⏳ CRIANDO TIMER para ${delay.inSeconds} segundos...');
+    
+    final timer = Timer(delay, () async {
+      print('⏰🔥🔥🔥 TIMER DISPAROU! Hora: ${DateTime.now()}');
+      
+      if (!_webPermissionGranted) {
+        print('   Verificando permissão novamente...');
+        _webPermissionGranted = await _requestWebPermission();
+      }
+      
+      if (_webPermissionGranted) {
+        print('   ✅ Permissão OK, mostrando notificação');
+        await _showWebNotification(title: title, body: body);
+        
+        // Reagendar para amanhã
+        final tomorrow = DateTime(
+          now.year, now.month, now.day + 1,
+          scheduledTime.hour, scheduledTime.minute
+        );
+        _scheduleWebNotification(
+          id: id,
+          title: title,
+          body: body,
+          scheduledTime: tomorrow,
+        );
+      } else {
+        print('   ❌ Permissão negada');
+      }
+      
+      _activeTimers.remove(id);
     });
+    
+    _activeTimers[id] = timer;
+    print('✅✅✅ TIMER #$id CRIADO COM SUCESSO!');
   }
 
-  // Mobile
+  // ==================== WEB: EXIBIR NOTIFICAÇÃO ====================
+  Future<void> _showWebNotification({
+    required String title,
+    required String body,
+  }) async {
+    print('   Mostrando notificação: "$title" - "$body"');
+    
+    if (!_webPermissionGranted) {
+      _webPermissionGranted = await _requestWebPermission();
+      if (!_webPermissionGranted) return;
+    }
+
+    try {
+      final options = web.NotificationOptions(body: body);
+      final notification = web.Notification(title, options);
+      
+      notification.onclick = ((web.Event event) {
+        print('👆 Notificação clicada');
+        web.window.focus();
+      }).toJS;
+      
+      print('✅✅✅ NOTIFICAÇÃO MOSTRADA COM SUCESSO!');
+    } catch (e) {
+      print('❌ Erro ao mostrar: $e');
+    }
+  }
+
+  // ==================== MOBILE: AGENDAMENTO ====================
   Future<void> _scheduleMobileNotification({
     required int id,
     required String medicationName,
@@ -199,6 +237,8 @@ class NotificationService {
     String? observation,
   }) async {
     try {
+      print('📱 Mobile: Agendando $medicationName para $scheduledTime');
+      
       final tz.TZDateTime scheduledDate = tz.TZDateTime.from(
         scheduledTime,
         tz.local,
@@ -239,24 +279,21 @@ class NotificationService {
         matchDateTimeComponents: DateTimeComponents.time,
         payload: 'medication_$id',
       );
+      
+      print('📱 Mobile: Notificação agendada com sucesso');
     } catch (e) {
-      print('❌ Mobile: Erro ao agendar notificação: $e');
+      print('❌ Mobile: Erro ao agendar: $e');
     }
   }
 
-  Future<void> _requestMobilePermissions() async {
-    if (await Permission.notification.isDenied) {
-      await Permission.notification.request();
-    }
-  }
-
-  void _onNotificationTap(NotificationResponse response) {
-    print('📱 Mobile: Notificação clicada: ${response.payload}');
-  }
-
+  // ==================== CANCELAMENTO ====================
   Future<void> cancelNotification(int id) async {
     if (kIsWeb) {
-      print('🌐 Web: Cancelamento não implementado');
+      if (_activeTimers.containsKey(id)) {
+        _activeTimers[id]!.cancel();
+        _activeTimers.remove(id);
+        print('✅ Timer #$id cancelado');
+      }
     } else {
       await _mobileNotifications?.cancel(id);
     }
@@ -264,9 +301,30 @@ class NotificationService {
 
   Future<void> cancelAllNotifications() async {
     if (kIsWeb) {
-      print('🌐 Web: Cancelamento não implementado');
+      for (var timer in _activeTimers.values) {
+        timer.cancel();
+      }
+      _activeTimers.clear();
+      print('✅ Todos os timers cancelados');
     } else {
       await _mobileNotifications?.cancelAll();
     }
+  }
+
+  // ==================== TESTE ====================
+  Future<void> testNotification() async {
+    print('🧪 Testando notificação em 5 segundos...');
+    
+    await scheduleMedicationReminder(
+      id: DateTime.now().millisecondsSinceEpoch,
+      medicationName: 'TESTE',
+      scheduledTime: DateTime.now().add(const Duration(seconds: 5)),
+      observation: 'Notificação de teste',
+    );
+  }
+
+  // ==================== DISPOSE ====================
+  void dispose() {
+    cancelAllNotifications();
   }
 }

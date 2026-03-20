@@ -42,64 +42,13 @@
     }
   </style>
   
-  <!-- Firebase SDK -->
-  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
-  
-  <script>
-    // Configuração do Firebase
-    const firebaseConfig = {
-      apiKey: "AIzaSyC_gGil9MXuz6agSXHC05vTS8c9FV7i07s",
-      authDomain: "hora-do-remedio-165b3.firebaseapp.com",
-      projectId: "hora-do-remedio-165b3",
-      storageBucket: "hora-do-remedio-165b3.firebasestorage.app",
-      messagingSenderId: "828522686230",
-      appId: "1:828522686230:web:1376d1593159d158671237"
-    };
-  </script>
-  
-  <script src="flutter.js" defer></script>
+  <!-- Incluir o flutter_bootstrap.js (gerado automaticamente) -->
+  <script src="flutter_bootstrap.js" async></script>
 </head>
 <body>
   <div id="loading" class="loading-screen">
     <div class="loading-spinner"></div>
     <div>Carregando Hora do Remédio...</div>
   </div>
-
-  <script>
-    window.addEventListener('load', function(ev) {
-      // Verificar se o Flutter está carregado
-      if (typeof _flutter === 'undefined') {
-        console.error('❌ Flutter não carregado!');
-        document.getElementById('loading').innerHTML = 
-          '<div>Erro: Flutter não carregado. Recarregue a página.</div>';
-        return;
-      }
-
-      console.log('✅ Flutter carregado, iniciando...');
-      
-      // Carregar o Flutter sem service worker por enquanto
-      _flutter.loader.loadEntrypoint({
-        onEntrypointLoaded: function(engineInitializer) {
-          console.log('✅ Engine initializer pronto');
-          engineInitializer.initializeEngine().then(function(appRunner) {
-            console.log('✅ App runner pronto');
-            // Esconder a tela de loading
-            document.getElementById('loading').style.display = 'none';
-            appRunner.runApp();
-          }).catch(function(error) {
-            console.error('❌ Erro ao inicializar engine:', error);
-            document.getElementById('loading').innerHTML = 
-              '<div>Erro: ' + error.message + '</div>';
-          });
-        }
-      }).catch(function(error) {
-        console.error('❌ Erro ao carregar entrypoint:', error);
-        document.getElementById('loading').innerHTML = 
-          '<div>Erro: ' + error.message + '</div>';
-      });
-    });
-  </script>
 </body>
 </html>

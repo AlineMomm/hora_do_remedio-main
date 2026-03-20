@@ -51,9 +51,7 @@ class MedicationService {
       await _storage.saveMedication(medToSave.toMap());
 
       // Agendar notificação (apenas em mobile)
-      if (!kIsWeb) {
-        await _scheduleNotificationForMedication(medToSave);
-      }
+      await _scheduleNotificationForMedication(medToSave);
 
       // Sincronizar com nuvem se estiver logado
       try {
@@ -168,4 +166,124 @@ class MedicationService {
       await _scheduleNotificationForMedication(med);
     }
   }
+Future<void> markAsTaken(String medicationId, String userId) async {
+  try {
+    print('💊 Marcando medicamento $medicationId como tomado');
+    
+    final allMeds = await _storage.getMedications(userId: userId);
+    final index = allMeds.indexWhere((m) => m['id'] == medicationId);
+    
+    if (index >= 0) {
+      final now = DateTime.now();
+      
+      // Verificar se já foi tomado hoje (proteção extra)
+      final lastTaken = allMeds[index]['lastTaken'];
+      if (lastTaken != null) {
+        final lastDate = DateTime.fromMillisecondsSinceEpoch(lastTaken);
+        if (lastDate.year == now.year &&
+            lastDate.month == now.month &&
+            lastDate.day == now.day) {
+          throw 'Este medicamento já foi registrado como tomado hoje';
+        }
+      }
+      
+      // Atualizar o lastTaken
+      allMeds[index]['lastTaken'] = now.millisecondsSinceEpoch;
+      await _storage.saveAllMedications(allMeds);
+      
+      print('✅ Medicamento $medicationId marcado como tomado');
+      
+      // Cancelar notificação de hoje e reagendar para amanhã
+      if (!kIsWeb) {
+        await NotificationService().cancelNotification(medicationId.hashCode);
+        
+        // Criar modelo para reagendar
+        final med = MedicationModel.fromMap(allMeds[index]);
+        final tomorrow = DateTime(
+          now.year, now.month, now.day + 1,
+          med.hour, med.minute
+        );
+        
+        await NotificationService().scheduleMedicationReminder(
+          id: med.id.hashCode,
+          medicationName: med.name,
+          scheduledTime: tomorrow,
+          observation: med.notes,
+        );
+      }
+      
+      // Sincronizar com nuvem
+      try {
+        final syncService = SyncService();
+        if (await syncService.isLoggedIn) {
+          await syncService.syncMedications();
+        }
+      } catch (e) {
+        print('⚠️ Erro ao sincronizar: $e');
+      }
+    } else {
+      throw 'Medicamento não encontrado';
+    }
+    
+  } catch (e) {
+    print('❌ Erro ao marcar como tomado: $e');
+    throw e.toString();
+  }
+}
+
+Future<void> undoTakeMedication(String medicationId, String userId) async {
+  try {
+    print('🔄 Desfazendo medicamento $medicationId');
+    
+    final allMeds = await _storage.getMedications(userId: userId);
+    final index = allMeds.indexWhere((m) => m['id'] == medicationId);
+    
+    if (index >= 0) {
+      // Remover o lastTaken
+      allMeds[index].remove('lastTaken');
+      await _storage.saveAllMedications(allMeds);
+      
+      print('✅ Desfeito medicamento $medicationId');
+      
+      // Reagendar notificação para hoje (se ainda não passou)
+      if (!kIsWeb) {
+        final med = MedicationModel.fromMap(allMeds[index]);
+        final now = DateTime.now();
+        final todayDose = DateTime(
+          now.year, now.month, now.day,
+          med.hour, med.minute
+        );
+        
+        await NotificationService().cancelNotification(medicationId.hashCode);
+        
+        final notificationTime = todayDose.isBefore(now)
+            ? todayDose.add(const Duration(days: 1))
+            : todayDose;
+        
+        await NotificationService().scheduleMedicationReminder(
+          id: med.id.hashCode,
+          medicationName: med.name,
+          scheduledTime: notificationTime,
+          observation: med.notes,
+        );
+      }
+      
+      // Sincronizar com nuvem
+      try {
+        final syncService = SyncService();
+        if (await syncService.isLoggedIn) {
+          await syncService.syncMedications();
+        }
+      } catch (e) {
+        print('⚠️ Erro ao sincronizar: $e');
+      }
+    } else {
+      throw 'Medicamento não encontrado';
+    }
+    
+  } catch (e) {
+    print('❌ Erro ao desfazer: $e');
+    throw e.toString();
+  }
+}
 }

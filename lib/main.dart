@@ -4,21 +4,28 @@ import 'package:firebase_core/firebase_core.dart';
 import 'firebase_options.dart';
 import 'pages/medication_list_page.dart';
 import 'services/settings_service.dart';
+import 'services/notification_service.dart'; // <-- ADICIONAR
 import 'package:hora_do_remedio/services/sync_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   try {
-    // INICIALIZAÇÃO EXATAMENTE COMO NA DOCUMENTAÇÃO
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
     );
     print('✅ Firebase.initializeApp() concluído com sucesso');
   } catch (e) {
     print('❌ Erro ao inicializar Firebase: $e');
-    // Se falhar aqui, não adianta continuar
     return;
+  }
+
+  // INICIALIZAR NOTIFICAÇÕES
+  try {
+    await NotificationService().initialize();
+    print('✅ Notificações inicializadas');
+  } catch (e) {
+    print('❌ Erro ao inicializar notificações: $e');
   }
 
   // Carregar configurações
@@ -28,6 +35,7 @@ void main() async {
 
   runApp(MyApp(settingsService: settingsService));
 }
+
 
 class MyApp extends StatelessWidget {
   final SettingsService settingsService;
